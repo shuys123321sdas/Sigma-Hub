@@ -86,6 +86,8 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.FastHaki = cfg.FastHaki == true
 	cfg.AutoRayleigh = cfg.AutoRayleigh == true
 	cfg.AutoAffinity = cfg.AutoAffinity == true
+	cfg.HideName = cfg.HideName ~= false
+	cfg.AutoClaimSam = cfg.AutoClaimSam ~= false
 	cfg.AffinityMelee = cfg.AffinityMelee
 	cfg.AffinitySword = cfg.AffinitySword
 	cfg.AffinitySniper = cfg.AffinitySniper
@@ -213,7 +215,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
 	local autoSpawnToggle, antiAfkToggle, themeDropdown, autoReloadToggle
 	local autoKenToggle, autoBusoToggle, fastHakiToggle, autoRayleighToggle
-	local autoAffinityToggle
+	local autoAffinityToggle, hideNameToggle, autoClaimSamToggle, hakiStatusPara
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -254,6 +256,36 @@ function SigmaUI.build(hub, Fish, opts)
 				notify(hub, "Anti AFK", v and "ON" or "OFF", "shield", 2)
 			end,
 		})
+
+		hideNameToggle = MainTab:Toggle({
+			Title = "Hide Name (Sigma Hub)",
+			Value = cfg.HideName ~= false,
+			Default = true,
+			Flag = "Sigma_HideName",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.HideName = v ~= false
+				if Fish and Fish.setHideName then Fish.setHideName(v) end
+				notify(hub, "Hide Name", v and "Sigma Hub" or "OFF", "user", 2)
+			end,
+		})
+
+		autoClaimSamToggle = MainTab:Toggle({
+			Title = "Auto Claim Sam",
+			Value = cfg.AutoClaimSam ~= false,
+			Default = true,
+			Flag = "Sigma_AutoClaimSam",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoClaimSam = v ~= false
+				if Fish and Fish.setAutoClaimSam then Fish.setAutoClaimSam(v) end
+				notify(hub, "Auto Claim Sam", v and "ON" or "OFF", "compass", 2)
+			end,
+		})
+
+		getgenv().SigmaHubNotify = function(title, content, icon, duration)
+			notify(hub, title, content, icon or "bell", duration or 3)
+		end
 
 		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
 
@@ -385,6 +417,33 @@ function SigmaUI.build(hub, Fish, opts)
 		})
 
 		HakiTab:Section({ Title = "Farm", Icon = "zap", Box = true, BoxBorder = true })
+
+		hakiStatusPara = HakiTab:Paragraph({
+			Title = "Haki Status",
+			Desc = "—",
+		})
+
+		getgenv().SigmaHakiMaxCallback = function(maxed, lv, stop)
+			if not hakiStatusPara or not hakiStatusPara.SetDesc then return end
+			if maxed then
+				hakiStatusPara:SetDesc(string.format("MAX — Lv %d (stop %d)", lv or 0, stop or 0))
+			else
+				hakiStatusPara:SetDesc(string.format("Lv %d / stop %d", lv or 0, stop or 0))
+			end
+		end
+
+		task.spawn(function()
+			while hakiStatusPara and hakiStatusPara.SetDesc do
+				local FishMod = getgenv().SigmaFish
+				if FishMod and FishMod.getHakiStatus then
+					local ok, st = pcall(FishMod.getHakiStatus)
+					if ok and st and type(getgenv().SigmaHakiMaxCallback) == "function" then
+						pcall(getgenv().SigmaHakiMaxCallback, st.maxed, st.level, st.stop)
+					end
+				end
+				task.wait(2)
+			end
+		end)
 
 		fastHakiToggle = HakiTab:Toggle({
 			Title = "Fast Haki",
@@ -574,6 +633,8 @@ function SigmaUI.build(hub, Fish, opts)
 		if fastHakiToggle and fastHakiToggle.Value ~= nil then c.FastHaki = fastHakiToggle.Value == true end
 		if autoRayleighToggle and autoRayleighToggle.Value ~= nil then c.AutoRayleigh = autoRayleighToggle.Value == true end
 		if autoAffinityToggle and autoAffinityToggle.Value ~= nil then c.AutoAffinity = autoAffinityToggle.Value == true end
+		if hideNameToggle and hideNameToggle.Value ~= nil then c.HideName = hideNameToggle.Value ~= false end
+		if autoClaimSamToggle and autoClaimSamToggle.Value ~= nil then c.AutoClaimSam = autoClaimSamToggle.Value ~= false end
 		getgenv().SigmaFishConfig = c
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
@@ -583,6 +644,8 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
 		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
 		if Fish.setAutoAffinity then Fish.setAutoAffinity(c.AutoAffinity == true) end
+		if Fish.setHideName then Fish.setHideName(c.HideName ~= false) end
+		if Fish.setAutoClaimSam then Fish.setAutoClaimSam(c.AutoClaimSam ~= false) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
