@@ -1,379 +1,367 @@
---[[ SigmaUI — Fishing + Quest tabs ]]
+--[[
+ Sigma Hub — entry loader (One Piece: Final)
 
-local SigmaUI = {}
+ Execute in executor (all modules from GitHub):
+   loadstring(game:HttpGet("https://raw.githubusercontent.com/shuys123321sdas/Sigma-Hub/refs/heads/main/SigmaHub.lua", true))()
 
-local function uiLog(opts, msg)
-	if opts and opts.log then
-		opts.log(msg)
-	elseif getgenv().SigmaHubLog then
-		getgenv().SigmaHubLog(msg)
+ Or local:
+   loadstring(readfile("UI/UX Syc Hub/SigmaHub.lua"))()
+
+ Debug log: bật/tắt bằng getgenv().SigmaHubDebug = true/false (mặc định true)
+]]
+
+local SIGMA_SOURCE_URL = "https://raw.githubusercontent.com/shuys123321sdas/Sigma-Hub/refs/heads/main/Sigma.lua"
+local SIGMA_FISH_URL = "https://raw.githubusercontent.com/shuys123321sdas/Sigma-Hub/refs/heads/main/Main.lua"
+local SIGMA_UI_URL = "https://raw.githubusercontent.com/shuys123321sdas/Sigma-Hub/refs/heads/main/SigmaUI.lua"
+
+local SAMPLE_PRIMARY = Color3.fromRGB(139, 92, 246)
+local LOG_PREFIX = "[Sigma Hub]"
+
+-- ── Logging ────────────────────────────────────────────────────────────────
+
+local function debugEnabled()
+	if getgenv().SigmaHubDebug == false then
+		return false
+	end
+	return true
+end
+
+local function log(level, ...)
+	local msg = table.concat({ ... }, " ")
+	if level == "warn" then
+		warn(LOG_PREFIX, msg)
+	elseif level == "err" then
+		warn(LOG_PREFIX, "ERROR:", msg)
 	else
-		print("[SigmaUI]", msg)
+		print(LOG_PREFIX, msg)
 	end
 end
 
-local function safeStatusText(Fish)
-	if not Fish or not Fish.getStatus then
-		return "Main.lua: not loaded"
+local function logStep(step, detail)
+	if not debugEnabled() then return end
+	if detail and detail ~= "" then
+		log("info", string.format("[%s] %s", step, detail))
+	else
+		log("info", string.format("[%s]", step))
 	end
+end
+
+local function logOk(step, detail)
+	log("info", string.format("✓ %s — %s", step, detail or "ok"))
+end
+
+local function logFail(step, err)
+	log("err", string.format("%s — %s", step, tostring(err)))
+end
+
+local function formatTraceback(err)
+	local tb = debug.traceback(tostring(err), 2)
+	return tb
+end
+
+local function detectExecutor()
+	if identifyexecutor then
+		local ok, name = pcall(identifyexecutor)
+		if ok and name then return tostring(name) end
+	end
+	if getexecutorname then
+		local ok, name = pcall(getexecutorname)
+		if ok and name then return tostring(name) end
+	end
+	if syn then return "Synapse X" end
+	if fluxus then return "Fluxus" end
+	if KRNL_LOADED then return "Krnl" end
+	return "Unknown"
+end
+
+local function logEnvironment()
+	if not debugEnabled() then return end
+	local lp = game:GetService("Players").LocalPlayer
+	log("info", "── Startup ──")
+	log("info", "Executor:", detectExecutor())
+	log("info", "PlaceId:", game.PlaceId, "| Game:", game:GetService("MarketplaceService") and "loaded" or "?")
+	if lp then
+		log("info", "Player:", lp.Name, "| UserId:", lp.UserId)
+	end
+	log("info", "WindUI URL:", SIGMA_SOURCE_URL)
+	log("info", "Main.lua URL:", SIGMA_FISH_URL)
+	log("info", "SigmaUI URL:", SIGMA_UI_URL)
+end
+
+local function describeModule(mod, label)
+	if mod == nil then
+		return label .. ": nil"
+	end
+	local t = type(mod)
+	if t ~= "table" then
+		return label .. ": type=" .. t
+	end
+	local keys = {}
+	for k in pairs(mod) do
+		keys[#keys + 1] = tostring(k)
+	end
+	table.sort(keys)
+	local preview = #keys > 0 and table.concat(keys, ", ") or "(empty table)"
+	if #preview > 120 then
+		preview = preview:sub(1, 117) .. "..."
+	end
+	return label .. ": table keys=[" .. preview .. "]"
+end
+
+local function checkFishBackend(Fish)
+	if not Fish then
+		return false, "Main.lua not loaded (nil)"
+	end
+	local required = {
+		"setAutoFish", "setAutoQuest", "setQuestPick", "setAutoExpertise",
+		"setAutoCookSell", "setSellAt", "cookSell", "getStatus", "getQuestList", "applyConfig",
+	}
+	local missing = {}
+	for _, name in ipairs(required) do
+		if type(Fish[name]) ~= "function" then
+			missing[#missing + 1] = name
+		end
+	end
+	if type(Fish.build) == "function" and type(Fish.setAutoFish) ~= "function" then
+		return false, "Main.lua SAI FILE trên GitHub — đang là SigmaUI.lua (chỉ có .build). Upload đúng Main.lua backend (~2400 dòng)."
+	end
+	if #missing > 0 then
+		return false, "Main.lua missing APIs: " .. table.concat(missing, ", ")
+	end
+	return true, "all fishing APIs present"
+end
+
+local function validateMainLuaSource(src)
+	if type(src) ~= "string" or src == "" then
+		return false, "Main.lua: empty response"
+	end
+	if string.find(src, "SigmaUI.build", 1, true)
+		and not string.find(src, "function SigmaFish.setAutoFish", 1, true) then
+		return false, "GitHub Main.lua = SigmaUI.lua (upload nhầm). Thay bằng file backend Main.lua (~2400 dòng)."
+	end
+	if not string.find(src, "function SigmaFish.setAutoFish", 1, true)
+		and not string.find(src, "startHubLoop", 1, true) then
+		return false, "Main.lua không phải backend SigmaFish — kiểm tra lại file upload."
+	end
+	return true
+end
+
+-- ── Loaders ────────────────────────────────────────────────────────────────
+
+local function httpLoad(url, label, opts)
+	opts = opts or {}
+	logStep("HttpGet", label .. " ← " .. url)
+
 	local ok, result = pcall(function()
-		return Fish.getStatus()
-	end)
-	if not ok then
-		return "Status error: " .. tostring(result)
-	end
-	local s = result
-	return table.concat({
-		"Auto Spawn: " .. (s.autoSpawn and "ON" or "OFF"),
-		"Anti AFK: " .. (s.antiAfk and "ON" or "OFF"),
-		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Rod quest: " .. tostring(s.rodPhase or "-"),
-		"Has rod: " .. (s.hasRod and "yes" or "no"),
-		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
-		"Picked: " .. tostring(s.questPick ~= "" and s.questPick or "-"),
-		"Auto Expertise: " .. (s.autoExpertise and "ON" or "OFF"),
-		"Active quest: " .. tostring(s.questActive or "-"),
-		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
-		"Sell at: " .. tostring(s.sellAt or "?"),
-		"Minigame: " .. (s.inMinigame and "active" or "idle"),
-	}, "\n")
-end
+		local t0 = os.clock()
+		local src = game:HttpGet(url, true)
+		local elapsed = os.clock() - t0
 
-local function hideEmptyPlaceholder(tab)
-	if not tab or not tab.UIElements or not tab.UIElements.ContainerFrame then
-		return
-	end
-	local scroll = tab.UIElements.ContainerFrame
-	for _, child in ipairs(scroll:GetChildren()) do
-		if child:IsA("Frame") and child:FindFirstChildOfClass("UIListLayout") then
-			for _, label in ipairs(child:GetDescendants()) do
-				if label:IsA("TextLabel") and label.Text == "This tab is Empty" then
-					child.Visible = false
-					return
-				end
+		if type(src) ~= "string" then
+			error(label .. ": HttpGet returned " .. type(src))
+		end
+		if src == "" then
+			error(label .. ": empty response (0 bytes)")
+		end
+
+		if opts.validateSource then
+			local vok, verr = opts.validateSource(src)
+			if not vok then
+				error(verr)
 			end
 		end
+
+		logStep("HttpGet", string.format("%s — %d bytes in %.2fs", label, #src, elapsed))
+
+		local fn, loadErr = loadstring(src, label)
+		if not fn then
+			error(label .. ": loadstring failed — " .. tostring(loadErr))
+		end
+
+		logStep("loadstring", label .. " — compile ok, running...")
+		local mod = fn()
+		return mod
+	end)
+
+	if ok then
+		logOk("Loaded", label .. " (" .. type(result) .. ")")
+		if debugEnabled() then
+			log("info", describeModule(result, label))
+		end
+		return result
 	end
+
+	logFail("Load failed", label)
+	logFail("Reason", result)
+	log("warn", "URL:", url)
+	if debugEnabled() then
+		log("warn", formatTraceback(result))
+	end
+	return nil
 end
 
-local function countElements(tab)
-	if not tab or not tab.Elements then
-		return 0
+local function loadFishBackend()
+	logStep("Backend", "loading Main.lua (fishing)")
+	local mod = httpLoad(SIGMA_FISH_URL, "Main.lua", { validateSource = validateMainLuaSource })
+	local ok, detail = checkFishBackend(mod)
+	if ok then
+		logOk("Backend", detail)
+		return mod
 	end
-	return #tab.Elements
+	log("warn", detail)
+	log("warn", "Fishing/Quest disabled — upload đúng Main.lua backend lên GitHub rồi ReloadSigmaHub()")
+	return mod -- vẫn trả mod nếu có (partial), nil nếu load fail
 end
 
-function SigmaUI.build(hub, Fish, opts)
-	opts = opts or {}
-	local notify = opts.notify or function(_, title, content)
-		hub:Notify({ Title = title, Content = content, Duration = 3 })
+local function loadSigmaUI()
+	logStep("UI module", "loading SigmaUI.lua")
+	local mod = httpLoad(SIGMA_UI_URL, "SigmaUI.lua")
+	if type(mod) ~= "table" then
+		error("SigmaUI.lua: expected table, got " .. type(mod))
 	end
-	local PRIMARY = opts.primary or Color3.fromRGB(139, 92, 246)
+	if type(mod.build) ~= "function" then
+		error("SigmaUI.lua: missing SigmaUI.build() — file outdated or wrong module?")
+	end
+	logOk("UI module", "SigmaUI.build found")
+	return mod
+end
 
-	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.AutoFish = cfg.AutoFish == true
-	cfg.AutoQuest = cfg.AutoQuest == true
-	cfg.AutoExpertise = cfg.AutoExpertise == true
-	cfg.AutoCookSell = cfg.AutoCookSell ~= false
-	cfg.AutoSpawn = cfg.AutoSpawn ~= false
-	cfg.AntiAfk = cfg.AntiAfk ~= false
-	cfg.SellAt = tonumber(cfg.SellAt) or 40
-	cfg.QuestPick = cfg.QuestPick or {}
-	getgenv().SigmaFishConfig = cfg
-
-	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {}
-
-	uiLog(opts, "CreateWindow...")
-	local Window = hub:CreateWindow({
-		Title = "Sigma Hub",
-		Author = "One Piece: Final",
-		Icon = "fish",
-		Folder = "SigmaHub",
-		Theme = "Sigma",
-		Size = UDim2.new(0, 620, 0, 480),
-		ToggleKey = Enum.KeyCode.RightShift,
-		Resizable = true,
-		Transparent = false,
-		Acrylic = true,
-		ScrollBarEnabled = true,
-		User = { Enabled = true },
-		OpenButton = {
-			Enabled = true,
-			OnlyMobile = false,
-			Title = "Sigma Hub",
-			Icon = "fish",
-			Draggable = true,
-			OnlyIcon = false,
-			Position = UDim2.new(0.5, 0, 0, 48),
-			Color = ColorSequence.new({
-				ColorSequenceKeypoint.new(0, Color3.fromHex("#8b5cf6")),
-				ColorSequenceKeypoint.new(1, Color3.fromHex("#6d28d9")),
-			}),
-		},
+local function notify(hub, title, content, icon, duration)
+	if not hub or type(hub.Notify) ~= "function" then
+		log("warn", "Notify skipped (hub invalid):", title, "-", content)
+		return
+	end
+	hub:Notify({
+		Title = title or "Sigma Hub",
+		Content = content or "",
+		Duration = duration or 3,
+		Icon = icon or "info",
 	})
-
-	if Window.ConfigManager then
-		local c = Window.ConfigManager:Config("sigma-fish")
-		if c and c.SetAsCurrent then c:SetAsCurrent() end
-	end
-
-	uiLog(opts, "Creating tabs...")
-	local MainTab = Window:Tab({ Title = "Main", Icon = "house" })
-	local FishTab = Window:Tab({ Title = "Fishing", Icon = "fish" })
-	local QuestTab = Window:Tab({ Title = "Quest", Icon = "list" })
-	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
-
-	uiLog(opts, "Populating tab controls (sync)...")
-	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
-	local autoSpawnToggle, antiAfkToggle
-	local populateOk, populateErr = pcall(function()
-		local statusPara = MainTab:Paragraph({
-			Title = "Status",
-			Desc = safeStatusText(Fish),
-			Buttons = {
-				{
-					Title = "Refresh",
-					Icon = "refresh-cw",
-					Callback = function()
-						if statusPara and statusPara.SetDesc then
-							statusPara:SetDesc(safeStatusText(Fish))
-						end
-					end,
-				},
-			},
-		})
-
-		MainTab:Section({ Title = "General", Icon = "shield", Box = true, BoxBorder = true })
-
-		autoSpawnToggle = MainTab:Toggle({
-			Title = "Auto Spawn",
-			Desc = "Tự bấm Spawn khi vào game (màn Load)",
-			Value = cfg.AutoSpawn ~= false,
-			Default = true,
-			Flag = "Sigma_AutoSpawn",
-			Callback = function(v)
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoSpawn = v == true
-				if Fish and Fish.setAutoSpawn then Fish.setAutoSpawn(v) end
-				notify(hub, "Auto Spawn", v and "ON" or "OFF", "play", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		antiAfkToggle = MainTab:Toggle({
-			Title = "Anti AFK",
-			Desc = "Chống kick AFK (VirtualUser + chặn hop + nhảy định kỳ)",
-			Value = cfg.AntiAfk ~= false,
-			Default = true,
-			Flag = "Sigma_AntiAfk",
-			Callback = function(v)
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AntiAfk = v == true
-				if Fish and Fish.setAntiAfk then Fish.setAntiAfk(v) end
-				notify(hub, "Anti AFK", v and "ON" or "OFF", "shield", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
-
-		autoFishToggle = FishTab:Toggle({
-			Title = "Auto Fish",
-			Desc = "Câu tại chỗ + tự làm quest rod (Package→Wood→Task→Sturdy→Challenge→Super) + equip rod tốt nhất",
-			Value = cfg.AutoFish,
-			Flag = "Sigma_AutoFish",
-			Callback = function(v)
-				if not Fish or not Fish.setAutoFish then
-					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
-					return
-				end
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoFish = v == true
-				Fish.setAutoFish(v)
-				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		autoCookToggle = FishTab:Toggle({
-			Title = "Auto Cook + Sell",
-			Desc = "Cook + sell từ xa (không TP bếp/Cooker)",
-			Value = cfg.AutoCookSell,
-			Flag = "Sigma_AutoCookSell",
-			Callback = function(v)
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoCookSell = v == true
-				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
-				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		FishTab:Slider({
-			Title = "Cook + Sell Every Fish",
-			Desc = "Số cá tối thiểu để auto cook + sell",
-			Value = { Min = 5, Max = 80, Default = cfg.SellAt },
-			Flag = "Sigma_FishSellAt",
-			Callback = function(v)
-				if Fish and Fish.setSellAt then Fish.setSellAt(v) end
-				getgenv().SigmaFishConfig.SellAt = v
-			end,
-		})
-
-		FishTab:Button({
-			Title = "Cook Fish + Sell Fish",
-			Icon = "utensils",
-			Color = PRIMARY,
-			Callback = function()
-				if not Fish or not Fish.cookSell then
-					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
-					return
-				end
-				Fish.cookSell()
-				notify(hub, "Cook+Sell", "Done", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		QuestTab:Section({ Title = "Auto Quest", Icon = "list", Box = true, BoxBorder = true })
-
-		questDropdown = QuestTab:Dropdown({
-			Title = "Select Quests",
-			Desc = "Chọn nhiều quest — bật Auto Quest để tự làm",
-			Values = questOptions,
-			Value = cfg.QuestPick,
-			Multi = true,
-			Flag = "Sigma_QuestPick",
-			Callback = function(v)
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.QuestPick = v
-				if Fish and Fish.setQuestPick then Fish.setQuestPick(v) end
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		autoQuestToggle = QuestTab:Toggle({
-			Title = "Auto Quest",
-			Desc = "Tự accept / deliver / claim quest đã chọn (quest kill mob cần farm tay)",
-			Value = cfg.AutoQuest,
-			Flag = "Sigma_AutoQuest",
-			Callback = function(v)
-				if not Fish or not Fish.setAutoQuest then
-					notify(hub, "Quest", "Main.lua chưa load", "triangle-alert")
-					return
-				end
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoQuest = v == true
-				Fish.setAutoQuest(v)
-				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		QuestTab:Section({ Title = "Expertise", Icon = "book-open", Box = true, BoxBorder = true })
-
-		autoExpertiseToggle = QuestTab:Toggle({
-			Title = "Auto Expertise",
-			Desc = "Chỉ làm quest Old Beggar (Humble Man #1) — giao trái cây từ xa",
-			Value = cfg.AutoExpertise,
-			Flag = "Sigma_AutoExpertise",
-			Callback = function(v)
-				if not Fish or not Fish.setAutoExpertise then
-					notify(hub, "Expertise", "Main.lua chưa load", "triangle-alert")
-					return
-				end
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoExpertise = v == true
-				Fish.setAutoExpertise(v)
-				notify(hub, "Expertise", v and "ON — Old Beggar" or "OFF", "book-open", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		QuestTab:Paragraph({
-			Title = "Ghi chú",
-			Desc = table.concat({
-				"Auto Fish: tự quest rod Fisherman (clone chưa rod → Package trước).",
-				"Auto Quest: Joe, Demon Hunter... (kill mob) cần farm combat riêng.",
-				"Auto Expertise: chỉ Old Beggar, tách khỏi Auto Quest.",
-			}, "\n"),
-		})
-
-		SettingsTab:Button({
-			Title = "Reload Hub",
-			Icon = "refresh-cw",
-			Color = PRIMARY,
-			Callback = function()
-				task.defer(function()
-					if getgenv().ReloadSigmaHub then getgenv().ReloadSigmaHub() end
-				end)
-			end,
-		})
-	end)
-
-	if not populateOk then
-		uiLog(opts, "POPULATE FAILED: " .. tostring(populateErr))
-		warn("[SigmaUI] populate error:", populateErr)
-		warn(debug.traceback(tostring(populateErr), 2))
-		error("SigmaUI populate failed: " .. tostring(populateErr))
-	end
-
-	local counts = {
-		Main = countElements(MainTab),
-		Fishing = countElements(FishTab),
-		Quest = countElements(QuestTab),
-		Settings = countElements(SettingsTab),
-	}
-	uiLog(opts, string.format(
-		"Elements — Main:%d Fishing:%d Quest:%d Settings:%d",
-		counts.Main, counts.Fishing, counts.Quest, counts.Settings
-	))
-
-	getgenv().__SIGMA_UI_COUNTS = counts
-
-	task.spawn(function()
-		task.wait(0.85)
-		if not Fish or not Fish.applyConfig then return end
-		local c = getgenv().SigmaFishConfig or {}
-		if autoFishToggle and autoFishToggle.Value ~= nil then
-			c.AutoFish = autoFishToggle.Value == true
-		end
-		if autoQuestToggle and autoQuestToggle.Value ~= nil then
-			c.AutoQuest = autoQuestToggle.Value == true
-		end
-		if autoExpertiseToggle and autoExpertiseToggle.Value ~= nil then
-			c.AutoExpertise = autoExpertiseToggle.Value == true
-		end
-		if autoCookToggle and autoCookToggle.Value ~= nil then
-			c.AutoCookSell = autoCookToggle.Value ~= false
-		end
-		if autoSpawnToggle and autoSpawnToggle.Value ~= nil then
-			c.AutoSpawn = autoSpawnToggle.Value == true
-		end
-		if antiAfkToggle and antiAfkToggle.Value ~= nil then
-			c.AntiAfk = antiAfkToggle.Value == true
-		end
-		if questDropdown and questDropdown.Value ~= nil then
-			c.QuestPick = questDropdown.Value
-		end
-		getgenv().SigmaFishConfig = c
-		Fish.applyConfig()
-		uiLog(opts, "Config synced from UI toggles")
-	end)
-
-	task.spawn(function()
-		task.wait(0.15)
-		hideEmptyPlaceholder(MainTab)
-		hideEmptyPlaceholder(FishTab)
-		hideEmptyPlaceholder(QuestTab)
-		hideEmptyPlaceholder(SettingsTab)
-
-		if Window.SelectTab and MainTab.Index then
-			Window:SelectTab(MainTab.Index)
-		end
-	end)
-
-	return Window
 end
 
-return SigmaUI
+-- ── Build ──────────────────────────────────────────────────────────────────
+
+local function buildSigmaHub()
+	logEnvironment()
+
+	-- 1) WindUI / Sigma.lua
+	logStep("1/4", "WindUI library (Sigma.lua)")
+	local hub = httpLoad(SIGMA_SOURCE_URL, "Sigma.lua")
+	if type(hub) ~= "table" then
+		error("Sigma.lua: expected table, got " .. type(hub))
+	end
+	if type(hub.CreateWindow) ~= "function" then
+		error("Sigma.lua: missing CreateWindow — wrong file or corrupt download?")
+	end
+	if type(hub.Notify) ~= "function" then
+		log("warn", "Sigma.lua: Notify missing — in-game toasts may not work")
+	end
+	getgenv().SigmaHub = hub
+	getgenv().WindUI = hub
+	logOk("1/4", "WindUI ready (CreateWindow ok)")
+
+	-- 2) Main.lua backend
+	logStep("2/4", "Fishing backend (Main.lua)")
+	local Fish = loadFishBackend()
+
+	-- 3) SigmaUI.lua
+	logStep("3/4", "UI builder (SigmaUI.lua)")
+	local SigmaUI = loadSigmaUI()
+
+	-- 4) Build window
+	logStep("4/4", "SigmaUI.build() — creating tabs & controls")
+	local buildOk, buildResult = pcall(function()
+		return SigmaUI.build(hub, Fish, {
+			notify = notify,
+			primary = SAMPLE_PRIMARY,
+			log = function(msg)
+				log("info", "[SigmaUI]", msg)
+			end,
+		})
+	end)
+
+	if not buildOk then
+		logFail("SigmaUI.build", buildResult)
+		log("warn", formatTraceback(buildResult))
+		error("UI build crashed: " .. tostring(buildResult))
+	end
+
+	local Window = buildResult
+	if not Window then
+		error("SigmaUI.build returned nil — check SigmaUI.lua task.defer / tab population")
+	end
+
+	getgenv().SigmaFishBackend = Fish
+	getgenv().SigmaWindow = Window
+
+	logOk("4/4", "Window created")
+
+	local counts = getgenv().__SIGMA_UI_COUNTS
+	if counts then
+		log("info", string.format(
+			"UI elements — Main:%d Fishing:%d Quest:%d Settings:%d",
+			counts.Main or 0, counts.Fishing or 0, counts.Quest or 0, counts.Settings or 0
+		))
+		local total = (counts.Main or 0) + (counts.Fishing or 0) + (counts.Quest or 0) + (counts.Settings or 0)
+		if total == 0 then
+			log("warn", "Tab trống — SigmaUI populate trả 0 element, xem log [SigmaUI] phía trên")
+		end
+	else
+		log("warn", "Không có __SIGMA_UI_COUNTS — SigmaUI.lua cũ trên GitHub?")
+	end
+
+	log("info", "── Ready ──")
+	log("info", "Player:", game:GetService("Players").LocalPlayer.Name)
+	log("info", "Fish backend:", Fish and "yes" or "no")
+	log("info", "Tip: tab trống → upload SigmaUI.lua mới + ReloadSigmaHub()")
+
+	notify(hub, "Sigma Hub", "Loaded (GitHub remote)", "fish", 4)
+	return hub, Window, Fish
+end
+
+local function reloadSigmaHub()
+	log("info", "── Reload ──")
+	if getgenv().SigmaFish and getgenv().SigmaFish.stop then
+		local ok, err = pcall(function() getgenv().SigmaFish.stop() end)
+		if not ok then
+			log("warn", "stop fish backend:", err)
+		end
+	end
+	if getgenv().SigmaHub and getgenv().SigmaHub.Window then
+		local ok, err = pcall(function()
+			getgenv().SigmaHub.Window:Destroy()
+		end)
+		if not ok then
+			log("warn", "destroy old window:", err)
+		end
+		getgenv().SigmaHub.Window = nil
+	end
+	getgenv().__SIGMA_HUB_LOADED = nil
+	return buildSigmaHub()
+end
+
+getgenv().ReloadSigmaHub = reloadSigmaHub
+getgenv().SigmaHubLog = function(...)
+	log("info", ...)
+end
+
+if getgenv().__SIGMA_HUB_LOADED then
+	warn(LOG_PREFIX, "Already loaded — run ReloadSigmaHub() to refresh")
+	return
+end
+getgenv().__SIGMA_HUB_LOADED = true
+
+local ok, err = pcall(buildSigmaHub)
+if not ok then
+	getgenv().__SIGMA_HUB_LOADED = nil
+	warn(LOG_PREFIX, "══════════════════════════════════════")
+	warn(LOG_PREFIX, "STARTUP FAILED")
+	warn(LOG_PREFIX, tostring(err))
+	warn(LOG_PREFIX, formatTraceback(err))
+	warn(LOG_PREFIX, "══════════════════════════════════════")
+	warn(LOG_PREFIX, "Checklist:")
+	warn(LOG_PREFIX, "  1) GitHub đã upload Sigma.lua, Main.lua, SigmaUI.lua?")
+	warn(LOG_PREFIX, "  2) URL raw.githubusercontent.com mở được trên máy?")
+	warn(LOG_PREFIX, "  3) SigmaUI.lua có SigmaUI.build và task.defer không lỗi?")
+	warn(LOG_PREFIX, "  4) Tắt log chi tiết: getgenv().SigmaHubDebug = false")
+end
