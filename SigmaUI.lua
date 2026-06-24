@@ -100,6 +100,14 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.QuestPick = cfg.QuestPick or {}
 	cfg.Theme = cfg.Theme or "Sigma"
 	getgenv().SigmaFishConfig = cfg
+	getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = false
+
+	local function uiCallback(fn)
+		return function(...)
+			if getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS then return end
+			return fn(...)
+		end
+	end
 
 	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {}
 	local themes = themeNames(hub)
@@ -222,17 +230,57 @@ function SigmaUI.build(hub, Fish, opts)
 		return c
 	end
 
-	readConfigSnapshotFromFile = function()
+	local ELEMENT_FLAG_KEYS = {
+		Sigma_AutoFish = "AutoFish",
+		Sigma_AutoQuest = "AutoQuest",
+		Sigma_AutoExpertise = "AutoExpertise",
+		Sigma_AutoCookSell = "AutoCookSell",
+		Sigma_AutoSpawn = "AutoSpawn",
+		Sigma_AntiAfk = "AntiAfk",
+		Sigma_AutoKenbunshoku = "AutoKenbunshoku",
+		Sigma_AutoBusoshoku = "AutoBusoshoku",
+		Sigma_FastHaki = "FastHaki",
+		Sigma_AutoRayleigh = "AutoRayleigh",
+		Sigma_AutoAffinity = "AutoAffinity",
+		Sigma_HideName = "HideName",
+		Sigma_AutoClaimSam = "AutoClaimSam",
+		Sigma_AutoDropCompass = "AutoDropCompass",
+		Sigma_AutoFindSam = "AutoFindSam",
+		Sigma_AutoSkill = "AutoSkill",
+		Sigma_AutoWhitelistRejoin = "AutoWhitelistRejoin",
+		Sigma_AutoCacheDrop = "AutoCacheDrop",
+		Sigma_AutoUseConsumables = "AutoUseConsumables",
+	}
+
+	local function readConfigFileData()
 		if not configFile or not configFile.Path then return nil end
 		if type(isfile) ~= "function" or not isfile(configFile.Path) then return nil end
 		if type(readfile) ~= "function" then return nil end
 		local ok, data = pcall(function()
 			return game:GetService("HttpService"):JSONDecode(readfile(configFile.Path))
 		end)
-		if not ok or type(data) ~= "table" then return nil end
+		if ok and type(data) == "table" then return data end
+		return nil
+	end
+
+	readConfigSnapshotFromFile = function()
+		local data = readConfigFileData()
+		if type(data) ~= "table" then return nil end
 		local custom = data.__custom
 		if type(custom) == "table" and type(custom.SigmaFishConfig) == "table" then
 			return copyConfigTable(custom.SigmaFishConfig)
+		end
+		local elements = data.__elements
+		if type(elements) ~= "table" then return nil end
+		local fromFlags = {}
+		for flag, key in pairs(ELEMENT_FLAG_KEYS) do
+			local el = elements[flag] or elements[tostring(flag)]
+			if type(el) == "table" and el.value ~= nil then
+				fromFlags[key] = el.value == true
+			end
+		end
+		if next(fromFlags) then
+			return normalizeSigmaConfig(fromFlags)
 		end
 		return nil
 	end
@@ -242,7 +290,9 @@ function SigmaUI.build(hub, Fish, opts)
 		c = normalizeSigmaConfig(c)
 		cfg = c
 		getgenv().SigmaFishConfig = c
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = true
 		if applyConfigToUi then applyConfigToUi(c) end
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = false
 		applyBackendFromConfig(c)
 	end
 
@@ -252,16 +302,18 @@ function SigmaUI.build(hub, Fish, opts)
 			configFile:SetAsCurrent()
 		end
 		if configFile and configFile.SetAutoLoad then
-			configFile:SetAutoLoad(cfg.AutoReloadConfig == true)
+			configFile:SetAutoLoad(false)
 		end
 	end
 
 	local function persistConfigMeta()
 		if not configFile then return end
-		if syncConfigFromUi then syncConfigFromUi(false) end
 		local snap = normalizeSigmaConfig(getgenv().SigmaFishConfig or cfg)
 		cfg = snap
 		getgenv().SigmaFishConfig = snap
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = true
+		if applyConfigToUi then applyConfigToUi(snap) end
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = false
 		if configFile.Set then
 			configFile:Set("Theme", snap.Theme or (hub.GetCurrentTheme and hub:GetCurrentTheme()) or "Sigma")
 			configFile:Set("AutoReloadConfig", snap.AutoReloadConfig == true)
@@ -306,26 +358,10 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 
 		local snap = readConfigSnapshotFromFile()
-		if type(snap) ~= "table" and configFile.Load then
-			local ok, err = pcall(function()
-				configFile:Load()
-			end)
-			if not ok then
-				if not silent then
-					notify(hub, "Config", "Load failed: " .. tostring(err), "triangle-alert", 4)
-				end
-				return false
-			end
-			task.wait(0.55)
-			if configFile.Get then
-				local fromCustom = configFile:Get("SigmaFishConfig")
-				if type(fromCustom) == "table" then
-					snap = copyConfigTable(fromCustom)
-				end
-			end
-			if type(snap) ~= "table" and syncConfigFromUi then
-				syncConfigFromUi(false)
-				snap = copyConfigTable(getgenv().SigmaFishConfig or cfg)
+		if type(snap) ~= "table" and configFile.Get then
+			local fromCustom = configFile:Get("SigmaFishConfig")
+			if type(fromCustom) == "table" then
+				snap = copyConfigTable(fromCustom)
 			end
 		end
 
@@ -337,6 +373,17 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 
 		local merged = normalizeSigmaConfig(snap)
+		local fileData = readConfigFileData()
+		local fileCustom = type(fileData) == "table" and fileData.__custom or nil
+		if type(fileCustom) == "table" then
+			if fileCustom.Theme and hub.SetTheme then
+				hub:SetTheme(fileCustom.Theme)
+				merged.Theme = fileCustom.Theme
+			end
+			if fileCustom.AutoReloadConfig ~= nil then
+				merged.AutoReloadConfig = fileCustom.AutoReloadConfig == true
+			end
+		end
 		if configFile.Get then
 			local theme = configFile:Get("Theme")
 			if theme and hub.SetTheme then
@@ -350,12 +397,11 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 
 		reinforceLoadedConfig(merged)
-		task.delay(0.45, function()
-			reinforceLoadedConfig(getgenv().SigmaFishConfig or merged)
-		end)
-		task.delay(1.0, function()
-			reinforceLoadedConfig(getgenv().SigmaFishConfig or merged)
-		end)
+		for _, delaySec in ipairs({ 0.45, 1.0, 1.75, 2.5 }) do
+			task.delay(delaySec, function()
+				reinforceLoadedConfig(getgenv().SigmaFishConfig or merged)
+			end)
+		end
 
 		if not silent then
 			notify(hub, "Config", "Config loaded", "folder-open", 3)
@@ -403,12 +449,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoSpawn ~= false,
 			Default = true,
 			Flag = "Sigma_AutoSpawn",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoSpawn = v == true
 				if Fish and Fish.setAutoSpawn then Fish.setAutoSpawn(v) end
 				notify(hub, "Auto Spawn", v and "ON" or "OFF", "play", 2)
-			end,
+			end),
 		})
 
 		antiAfkToggle = MainTab:Toggle({
@@ -416,12 +462,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AntiAfk ~= false,
 			Default = true,
 			Flag = "Sigma_AntiAfk",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AntiAfk = v == true
 				if Fish and Fish.setAntiAfk then Fish.setAntiAfk(v) end
 				notify(hub, "Anti AFK", v and "ON" or "OFF", "shield", 2)
-			end,
+			end),
 		})
 
 		hideNameToggle = MainTab:Toggle({
@@ -429,13 +475,13 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.HideName ~= false,
 			Default = true,
 			Flag = "Sigma_HideName",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.HideName = v ~= false
 				if Fish and Fish.setHideName then Fish.setHideName(v) end
 				applyUiHideName()
 				notify(hub, "Hide Name", v and "Sigma Hub" or "OFF", "user", 2)
-			end,
+			end),
 		})
 
 		getgenv().SigmaHubNotify = function(title, content, icon, duration)
@@ -448,7 +494,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Title = "Auto Fish",
 			Value = cfg.AutoFish,
 			Flag = "Sigma_AutoFish",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				if not Fish or not Fish.setAutoFish then
 					notify(hub, "Fishing", "Backend not loaded", "triangle-alert")
 					return
@@ -457,30 +503,30 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoFish = v == true
 				Fish.setAutoFish(v)
 				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
-			end,
+			end),
 		})
 
 		autoCookToggle = FishTab:Toggle({
 			Title = "Auto Cook + Sell",
 			Value = cfg.AutoCookSell,
 			Flag = "Sigma_AutoCookSell",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoCookSell = v == true
 				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
 				notify(hub, "Cook + Sell", v and "ON" or "OFF", "utensils", 2)
-			end,
+			end),
 		})
 
 		sellAtSlider = FishTab:Slider({
 			Title = "Cook + Sell Threshold",
 			Value = { Min = 5, Max = 80, Default = cfg.SellAt },
 			Flag = "Sigma_FishSellAt",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				if Fish and Fish.setSellAt then Fish.setSellAt(v) end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SellAt = v
-			end,
+			end),
 		})
 
 		FishTab:Button({
@@ -531,11 +577,11 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.CacheUsePick or {},
 			Multi = true,
 			Flag = "Sigma_CacheUsePick",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.CacheUsePick = v
 				if Fish and Fish.setCacheUsePick then Fish.setCacheUsePick(v) end
-			end,
+			end),
 		})
 
 		cacheDropDropdown = FishTab:Dropdown({
@@ -544,11 +590,11 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.CacheDropPick or {},
 			Multi = true,
 			Flag = "Sigma_CacheDropPick",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.CacheDropPick = v
 				if Fish and Fish.setCacheDropPick then Fish.setCacheDropPick(v) end
-			end,
+			end),
 		})
 
 		autoCacheDropToggle = FishTab:Toggle({
@@ -556,12 +602,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoCacheDrop == true,
 			Default = false,
 			Flag = "Sigma_AutoCacheDrop",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoCacheDrop = v == true
 				if Fish and Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(v) end
 				notify(hub, "Auto Drop Cache", v and "ON" or "OFF", "package-minus", 2)
-			end,
+			end),
 		})
 
 		autoUseConsumablesToggle = FishTab:Toggle({
@@ -570,12 +616,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoUseConsumables ~= false,
 			Default = true,
 			Flag = "Sigma_AutoUseConsumables",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoUseConsumables = v ~= false
 				if Fish and Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(v) end
 				notify(hub, "Auto Use Fruits/Drinks", v and "ON" or "OFF", "cup-soda", 2)
-			end,
+			end),
 		})
 
 		FishTab:Button({
@@ -600,18 +646,18 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.QuestPick,
 			Multi = true,
 			Flag = "Sigma_QuestPick",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.QuestPick = v
 				if Fish and Fish.setQuestPick then Fish.setQuestPick(v) end
-			end,
+			end),
 		})
 
 		autoQuestToggle = QuestTab:Toggle({
 			Title = "Auto Quest",
 			Value = cfg.AutoQuest,
 			Flag = "Sigma_AutoQuest",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				if not Fish or not Fish.setAutoQuest then
 					notify(hub, "Quest", "Backend not loaded", "triangle-alert")
 					return
@@ -620,7 +666,7 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoQuest = v == true
 				Fish.setAutoQuest(v)
 				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
-			end,
+			end),
 		})
 
 		QuestTab:Section({ Title = "Expertise", Icon = "book-open", Box = true, BoxBorder = true })
@@ -629,7 +675,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Title = "Auto Expertise",
 			Value = cfg.AutoExpertise,
 			Flag = "Sigma_AutoExpertise",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				if not Fish or not Fish.setAutoExpertise then
 					notify(hub, "Expertise", "Backend not loaded", "triangle-alert")
 					return
@@ -638,7 +684,7 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoExpertise = v == true
 				Fish.setAutoExpertise(v)
 				notify(hub, "Auto Expertise", v and "ON" or "OFF", "book-open", 2)
-			end,
+			end),
 		})
 
 		HakiTab:Section({ Title = "Haki Toggle", Icon = "eye", Box = true, BoxBorder = true })
@@ -647,24 +693,24 @@ function SigmaUI.build(hub, Fish, opts)
 			Title = "Auto Kenbunshoku",
 			Value = cfg.AutoKenbunshoku,
 			Flag = "Sigma_AutoKenbunshoku",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoKenbunshoku = v == true
 				if Fish and Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(v) end
 				notify(hub, "Kenbunshoku", v and "ON" or "OFF", "eye", 2)
-			end,
+			end),
 		})
 
 		autoBusoToggle = HakiTab:Toggle({
 			Title = "Auto Busoshoku",
 			Value = cfg.AutoBusoshoku,
 			Flag = "Sigma_AutoBusoshoku",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoBusoshoku = v == true
 				if Fish and Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(v) end
 				notify(hub, "Busoshoku", v and "ON" or "OFF", "shield", 2)
-			end,
+			end),
 		})
 
 		HakiTab:Section({ Title = "Farm", Icon = "zap", Box = true, BoxBorder = true })
@@ -700,24 +746,24 @@ function SigmaUI.build(hub, Fish, opts)
 			Title = "Fast Haki",
 			Value = cfg.FastHaki,
 			Flag = "Sigma_FastHaki",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.FastHaki = v == true
 				if Fish and Fish.setFastHaki then Fish.setFastHaki(v) end
 				notify(hub, "Fast Haki", v and "ON" or "OFF", "zap", 2)
-			end,
+			end),
 		})
 
 		autoRayleighToggle = HakiTab:Toggle({
 			Title = "Auto Rayleigh",
 			Value = cfg.AutoRayleigh,
 			Flag = "Sigma_AutoRayleigh",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoRayleigh = v == true
 				if Fish and Fish.setAutoRayleigh then Fish.setAutoRayleigh(v) end
 				notify(hub, "Auto Rayleigh", v and "ON" or "OFF", "sparkles", 2)
-			end,
+			end),
 		})
 
 		CompassTab:Section({ Title = "Sam / Compass", Icon = "compass", Box = true, BoxBorder = true })
@@ -731,12 +777,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoClaimSam == true,
 			Default = false,
 			Flag = "Sigma_AutoClaimSam",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoClaimSam = v == true
 				if Fish and Fish.setAutoClaimSam then Fish.setAutoClaimSam(v) end
 				notify(hub, "Auto Claim Sam", v and "ON" or "OFF", "compass", 2)
-			end,
+			end),
 		})
 
 		autoDropCompassToggle = CompassTab:Toggle({
@@ -744,12 +790,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoDropCompass == true,
 			Default = false,
 			Flag = "Sigma_AutoDropCompass",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoDropCompass = v == true
 				if Fish and Fish.setAutoDropCompass then Fish.setAutoDropCompass(v) end
 				notify(hub, "Auto Drop Compass", v and "ON" or "OFF", "package-minus", 2)
-			end,
+			end),
 		})
 
 		autoFindSamToggle = CompassTab:Toggle({
@@ -757,12 +803,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoFindSam == true,
 			Default = false,
 			Flag = "Sigma_AutoFindSam",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoFindSam = v == true
 				if Fish and Fish.setAutoFindSam then Fish.setAutoFindSam(v) end
 				notify(hub, "Auto Find Sam", v and "ON" or "OFF", "search", 2)
-			end,
+			end),
 		})
 
 		AutoSkillTab:Section({ Title = "Skill Spam", Icon = "keyboard", Box = true, BoxBorder = true })
@@ -806,7 +852,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = skillPick,
 			Multi = true,
 			Flag = "Sigma_SkillKeys",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SkillKeys = v
 				applySkillHoldFromUI()
@@ -814,7 +860,7 @@ function SigmaUI.build(hub, Fish, opts)
 				if getgenv().SigmaFishConfig.AutoSkill and Fish and Fish.setAutoSkill then
 					Fish.setAutoSkill(true)
 				end
-			end,
+			end),
 		})
 
 		skillHoldInput = AutoSkillTab:Input({
@@ -822,14 +868,14 @@ function SigmaUI.build(hub, Fish, opts)
 			Placeholder = "0.5",
 			Value = tostring(cfg.SkillHoldSec or 0.5),
 			Flag = "Sigma_SkillHoldSec",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				if type(v) == "string" then v = v:match("^%s*(.-)%s*$") end
 				local n = tonumber(v)
 				if n == nil or n < 0 then return end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SkillHoldSec = n
 				if Fish and Fish.setSkillHoldSec then Fish.setSkillHoldSec(n) end
-			end,
+			end),
 		})
 
 		autoSkillToggle = AutoSkillTab:Toggle({
@@ -837,7 +883,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoSkill == true,
 			Default = false,
 			Flag = "Sigma_AutoSkill",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoSkill = v == true
 				applySkillHoldFromUI()
@@ -847,7 +893,7 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				if Fish and Fish.setAutoSkill then Fish.setAutoSkill(v) end
 				notify(hub, "Auto Skill", v and "ON" or "OFF", "zap", 2)
-			end,
+			end),
 		})
 
 		LucyTab:Section({ Title = "Affinity Roll", Icon = "sparkles", Box = true, BoxBorder = true })
@@ -865,7 +911,7 @@ function SigmaUI.build(hub, Fish, opts)
 				Placeholder = placeholder,
 				Value = val ~= nil and tostring(val) or "",
 				Flag = "Sigma_Affinity_" .. stat,
-				Callback = function(v)
+				Callback = uiCallback(function(v)
 					getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 					local n = tonumber(v)
 					if v == "" or v == nil then
@@ -878,7 +924,7 @@ function SigmaUI.build(hub, Fish, opts)
 					if Fish and Fish.setAffinityTarget then
 						Fish.setAffinityTarget(stat, getgenv().SigmaFishConfig[cfgKey])
 					end
-				end,
+				end),
 			})
 		end
 
@@ -891,12 +937,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Title = "Auto Affinity",
 			Value = cfg.AutoAffinity,
 			Flag = "Sigma_AutoAffinity",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoAffinity = v == true
 				if Fish and Fish.setAutoAffinity then Fish.setAutoAffinity(v) end
 				notify(hub, "Auto Affinity", v and "ON (slot 1)" or "OFF", "sparkles", 2)
-			end,
+			end),
 		})
 
 		SettingsTab:Section({ Title = "Auto Rejoin", Icon = "shield-check", Box = true, BoxBorder = true })
@@ -911,11 +957,11 @@ function SigmaUI.build(hub, Fish, opts)
 			Placeholder = "Friend1, Friend2, AltAccount",
 			Value = cfg.RejoinWhitelist or "",
 			Flag = "Sigma_RejoinWhitelist",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.RejoinWhitelist = tostring(v or "")
 				if Fish and Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(v) end
-			end,
+			end),
 		})
 
 		autoWhitelistToggle = SettingsTab:Toggle({
@@ -923,7 +969,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoWhitelistRejoin == true,
 			Default = false,
 			Flag = "Sigma_AutoWhitelistRejoin",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoWhitelistRejoin = v == true
 				if rejoinWhitelistInput and rejoinWhitelistInput.Value ~= nil then
@@ -934,7 +980,7 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				if Fish and Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(v) end
 				notify(hub, "Whitelist Kick", v and "ON" or "OFF", "shield-check", 2)
-			end,
+			end),
 		})
 
 		SettingsTab:Button({
@@ -958,12 +1004,12 @@ function SigmaUI.build(hub, Fish, opts)
 			Values = themes,
 			Value = cfg.Theme,
 			Flag = "Sigma_Theme",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				cfg.Theme = v
 				getgenv().SigmaFishConfig = cfg
 				if hub.SetTheme then hub:SetTheme(v) end
 				if configFile and configFile.Set then configFile:Set("Theme", v) end
-			end,
+			end),
 		})
 
 		SettingsTab:Section({ Title = "Config", Icon = "save", Box = true, BoxBorder = true })
@@ -990,11 +1036,11 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = cfg.AutoReloadConfig ~= false,
 			Default = true,
 			Flag = "Sigma_AutoReloadConfig",
-			Callback = function(v)
+			Callback = uiCallback(function(v)
 				cfg.AutoReloadConfig = v == true
 				getgenv().SigmaFishConfig = cfg
 				if configFile and configFile.SetAutoLoad then
-					configFile:SetAutoLoad(v == true)
+					configFile:SetAutoLoad(false)
 				end
 				if configFile and configFile.Set then
 					configFile:Set("AutoReloadConfig", v == true)
@@ -1003,7 +1049,7 @@ function SigmaUI.build(hub, Fish, opts)
 					persistConfigMeta()
 					pcall(function() configFile:Save() end)
 				end
-			end,
+			end),
 		})
 
 		SettingsTab:Section({ Title = "Hub", Icon = "refresh-cw", Box = true, BoxBorder = true })
@@ -1144,13 +1190,18 @@ function SigmaUI.build(hub, Fish, opts)
 	end
 
 	task.spawn(function()
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = true
 		if cfg.AutoReloadConfig ~= false then
 			loadConfig(true)
 		else
-			task.wait(0.85)
-			syncConfigFromUi(true)
+			applyBackendFromConfig(getgenv().SigmaFishConfig or cfg)
 		end
-		uiLog(opts, "Config synced from UI toggles")
+		task.wait(2.75)
+		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = false
+		if getgenv().SigmaFishConfig then
+			reinforceLoadedConfig(getgenv().SigmaFishConfig)
+		end
+		uiLog(opts, "Config synced")
 	end)
 
 	task.spawn(function()
