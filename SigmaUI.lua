@@ -24,6 +24,8 @@ local function safeStatusText(Fish)
 	end
 	local s = result
 	return table.concat({
+		"Auto Spawn: " .. (s.autoSpawn and "ON" or "OFF"),
+		"Anti AFK: " .. (s.antiAfk and "ON" or "OFF"),
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
 		"Rod quest: " .. tostring(s.rodPhase or "-"),
 		"Has rod: " .. (s.hasRod and "yes" or "no"),
@@ -73,6 +75,8 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoQuest = cfg.AutoQuest == true
 	cfg.AutoExpertise = cfg.AutoExpertise == true
 	cfg.AutoCookSell = cfg.AutoCookSell ~= false
+	cfg.AutoSpawn = cfg.AutoSpawn ~= false
+	cfg.AntiAfk = cfg.AntiAfk ~= false
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
 	cfg.QuestPick = cfg.QuestPick or {}
 	getgenv().SigmaFishConfig = cfg
@@ -121,6 +125,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	uiLog(opts, "Populating tab controls (sync)...")
 	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
+	local autoSpawnToggle, antiAfkToggle
 	local populateOk, populateErr = pcall(function()
 		local statusPara = MainTab:Paragraph({
 			Title = "Status",
@@ -136,6 +141,38 @@ function SigmaUI.build(hub, Fish, opts)
 					end,
 				},
 			},
+		})
+
+		MainTab:Section({ Title = "General", Icon = "shield", Box = true, BoxBorder = true })
+
+		autoSpawnToggle = MainTab:Toggle({
+			Title = "Auto Spawn",
+			Desc = "Tự bấm Spawn khi vào game (màn Load)",
+			Value = cfg.AutoSpawn ~= false,
+			Default = true,
+			Flag = "Sigma_AutoSpawn",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoSpawn = v == true
+				if Fish and Fish.setAutoSpawn then Fish.setAutoSpawn(v) end
+				notify(hub, "Auto Spawn", v and "ON" or "OFF", "play", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
+			end,
+		})
+
+		antiAfkToggle = MainTab:Toggle({
+			Title = "Anti AFK",
+			Desc = "Chống kick AFK (VirtualUser + chặn hop + nhảy định kỳ)",
+			Value = cfg.AntiAfk ~= false,
+			Default = true,
+			Flag = "Sigma_AntiAfk",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AntiAfk = v == true
+				if Fish and Fish.setAntiAfk then Fish.setAntiAfk(v) end
+				notify(hub, "Anti AFK", v and "ON" or "OFF", "shield", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
+			end,
 		})
 
 		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
@@ -309,6 +346,12 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 		if autoCookToggle and autoCookToggle.Value ~= nil then
 			c.AutoCookSell = autoCookToggle.Value ~= false
+		end
+		if autoSpawnToggle and autoSpawnToggle.Value ~= nil then
+			c.AutoSpawn = autoSpawnToggle.Value == true
+		end
+		if antiAfkToggle and antiAfkToggle.Value ~= nil then
+			c.AntiAfk = antiAfkToggle.Value == true
 		end
 		if questDropdown and questDropdown.Value ~= nil then
 			c.QuestPick = questDropdown.Value
