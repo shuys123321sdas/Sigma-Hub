@@ -189,6 +189,22 @@ RAYLEIGH = {
 	_meditateTrack = nil,
 }
 
+AFFINITY = {
+	ON = false,
+	STATS = { "Defense", "Melee", "Sniper", "Sword" },
+	MAX_LOCKS = 3,
+	SKIP_ANIM = true,
+	ROLL_WAIT = 0.9,
+	POLL = 0.05,
+	MAX_ROLLS = 500,
+	STABLE_WAIT = 0.06,
+	LOCK_WAIT = 0.04,
+	SYNC_WAIT = 0.05,
+	TARGETS = {},
+	sealed = {},
+	_logAt = {},
+}
+
 BEGGAR = {
 	AUTO_GOLDEN = true,
 	KEEP_GOLDEN = 1,
@@ -2373,7 +2389,7 @@ function fishStep()
 end
 
 function hubRunning()
-	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled()
+	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON
 end
 
 function hakiModeEnabled()
@@ -2516,6 +2532,11 @@ function syncCfg()
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
 	HAKI.FAST = cfg.FastHaki == true
 	RAYLEIGH.ON = cfg.AutoRayleigh == true
+	AFFINITY.ON = cfg.AutoAffinity == true
+	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+	if not AFFINITY.ON then
+		stopAffinityLoop()
+	end
 	if not HAKI.FAST then
 		STATE.hakiFastRunning = false
 		if hakiReleaseFarm then hakiReleaseFarm() end
@@ -3653,6 +3674,339 @@ function stepRayleigh()
 	return false
 end
 
+function affinityLog(msg, interval)
+	interval = interval or 4
+	local now = os.clock()
+	local key = tostring(msg)
+	if now - (AFFINITY._logAt[key] or 0) < interval then return end
+	AFFINITY._logAt[key] = now
+	print("[Sigma Affinity]", msg)
+end
+
+function affinityTargetsFromCfg(cfg)
+	cfg = cfg or getgenv().SigmaFishConfig or {}
+	local t = {}
+	local map = {
+		Melee = cfg.AffinityMelee,
+		Sword = cfg.AffinitySword,
+		Sniper = cfg.AffinitySniper,
+		Defense = cfg.AffinityDefense,
+	}
+	for stat, raw in pairs(map) do
+		local v = tonumber(raw)
+		if v and v > 0 then t[stat] = v end
+	end
+	return t
+end
+
+function affinityGetUI()
+	local pg = player and player:FindFirstChild("PlayerGui")
+	local mf = pg and pg:FindFirstChild("MerchantsFolder")
+	return mf and mf:FindFirstChild("AffinityUI")
+end
+
+function affinityEnsureSkip(ui)
+	if not ui or not AFFINITY.SKIP_ANIM then return false end
+	local sv = ui.Frame and ui.Frame.Skip and ui.Frame.Skip:FindFirstChild("SkipAffinity")
+	if not sv then return false end
+	pcall(function() sv.Value = true end)
+	return sv.Value == true
+end
+
+function affinityScaleToLevel(s)
+	if s <= 0.05 then return nil end
+	return (s / 2) + 1
+end
+
+function affinityReadUI(panel)
+	local aff = {}
+	for _, stat in ipairs(AFFINITY.STATS) do
+		local row = panel:FindFirstChild(stat)
+		local circle = row and row:FindFirstChild("Circle")
+		if circle then
+			local s = math.max(circle.Size.X.Scale, circle.Size.Y.Scale)
+			local lv = affinityScaleToLevel(s)
+			if lv then aff[stat] = lv end
+		end
+	end
+	return aff
+end
+
+function affinityReadData(dfKey)
+	local data = getData()
+	local block = data and data[dfKey]
+	local raw = block and block.Affinity
+	if type(raw) ~= "table" then return nil end
+	local aff = {}
+	for _, stat in ipairs(AFFINITY.STATS) do
+		local v = tonumber(raw[stat])
+		if v and v > 0 then aff[stat] = v end
+	end
+	return next(aff) and aff or nil
+end
+
+function affinityMerge(a, b)
+	local aff = {}
+	for _, stat in ipairs(AFFINITY.STATS) do
+		local v = math.max(a and a[stat] or 0, b and b[stat] or 0)
+		if v > 0 then aff[stat] = v end
+	end
+	return aff
+end
+
+function affinityRead(panel, dfKey)
+	return affinityMerge(affinityReadData(dfKey), affinityReadUI(panel))
+end
+
+function affinityReadStable(panel, dfKey)
+	if AFFINITY.SKIP_ANIM then return affinityRead(panel, dfKey) end
+	local a1 = affinityRead(panel, dfKey)
+	task.wait(0.08)
+	return affinityMerge(a1, affinityRead(panel, dfKey))
+end
+
+function affinityMarkSealed(aff)
+	for stat, t in pairs(AFFINITY.TARGETS) do
+		if (tonumber(aff[stat]) or 0) + 0.001 >= tonumber(t) then
+			AFFINITY.sealed[stat] = true
+		end
+	end
+end
+
+function affinityLockOf(panel, stat)
+	local row = panel:FindFirstChild(stat)
+	return row and row:FindFirstChild("Lock")
+end
+
+function affinityIsLocked(lock)
+	return lock and lock.ImageTransparency < 0.35
+end
+
+function affinityGetLockedUI(panel)
+	local out = {}
+	for _, stat in ipairs(AFFINITY.STATS) do
+		if affinityIsLocked(affinityLockOf(panel, stat)) then
+			table.insert(out, stat)
+		end
+	end
+	return out
+end
+
+function affinityParseMoney(text, fallback)
+	if not text then return fallback or 0 end
+	local n = string.match(text, "([%d,]+)")
+	if not n then return fallback or 0 end
+	return tonumber((n:gsub(",", ""))) or fallback or 0
+end
+
+function affinityRollCost(panel)
+	local btn = panel:FindFirstChild("Reroll1")
+	if not btn then return 100000 end
+	return affinityParseMoney(btn.Text, 100000)
+end
+
+function affinityGetBeri(ui)
+	local cash = ui and ui.Frame and ui.Frame:FindFirstChild("Cash")
+	if cash then
+		local b = affinityParseMoney(cash.Text, 0)
+		if b > 0 then return b end
+	end
+	local data = getData()
+	return data and data.Stats and tonumber(data.Stats.Beri) or 0
+end
+
+function affinityPendingStats(aff)
+	local out = {}
+	for stat, t in pairs(AFFINITY.TARGETS) do
+		local target = tonumber(t)
+		local v = tonumber(aff[stat]) or 0
+		if AFFINITY.sealed[stat] then
+			if v + 0.12 < target then
+				AFFINITY.sealed[stat] = nil
+				table.insert(out, stat)
+			end
+		elseif v + 0.001 < target then
+			table.insert(out, stat)
+		end
+	end
+	return out
+end
+
+function affinitySetLock(panel, stat, on)
+	local btn = affinityLockOf(panel, stat)
+	if not btn then return end
+	if affinityIsLocked(btn) == on then return end
+	clickGui(btn)
+	if affinityIsLocked(btn) ~= on then
+		btn.ImageTransparency = on and 0 or 0.7
+	end
+	task.wait(AFFINITY.LOCK_WAIT)
+end
+
+function affinitySyncLocks(panel, aff, pending)
+	local pendingSet = {}
+	for _, s in ipairs(pending) do pendingSet[s] = true end
+	for _, stat in ipairs(pending) do
+		if not AFFINITY.sealed[stat] then
+			affinitySetLock(panel, stat, false)
+		end
+	end
+	local toLock = {}
+	for stat in pairs(AFFINITY.TARGETS) do
+		if AFFINITY.sealed[stat] or (not pendingSet[stat] and (tonumber(aff[stat]) or 0) + 0.001 >= tonumber(AFFINITY.TARGETS[stat])) then
+			table.insert(toLock, { stat = stat, v = tonumber(aff[stat]) or 999 })
+		end
+	end
+	table.sort(toLock, function(a, b) return a.v > b.v end)
+	for i = 1, math.min(AFFINITY.MAX_LOCKS, #toLock) do
+		affinitySetLock(panel, toLock[i].stat, true)
+	end
+	task.wait(AFFINITY.SYNC_WAIT)
+	return affinityGetLockedUI(panel), affinityRollCost(panel)
+end
+
+function affinityPanelDfKey(panel, fallback)
+	local df = panel:FindFirstChild("DevilFruit")
+	if df and df:IsA("StringValue") and df.Value ~= "" then
+		return df.Value
+	end
+	return fallback
+end
+
+function affinityGetSlot1(ui, data)
+	local frame = ui and ui.Frame
+	if not frame then return nil end
+	local df2 = data and data.DevilFruit2
+	local panel
+	if df2 and df2.Name ~= "" then
+		panel = frame.Affinities2a
+	else
+		panel = frame.Affinities
+		if not panel then panel = frame.Affinities2a end
+	end
+	if not panel then return nil end
+	local key = affinityPanelDfKey(panel, "DevilFruit1") or "DevilFruit1"
+	return { panel = panel, key = key }
+end
+
+function affinityOpenUI()
+	local ui = affinityGetUI()
+	if not ui then return nil end
+	if not ui.Enabled then
+		ui.Enabled = true
+		task.wait(0.1)
+	end
+	affinityEnsureSkip(ui)
+	return ui.Enabled and ui or nil
+end
+
+function affinityRoll(panel, dfKey)
+	local ui = affinityGetUI()
+	local skip = affinityEnsureSkip(ui)
+	local locked = affinityGetLockedUI(panel)
+	if exec("Affinity", { locked, dfKey, "Beri", skip }) then return true end
+	return clickGui(panel:FindFirstChild("Reroll1"))
+end
+
+function affinityAffChanged(a, b)
+	for stat in pairs(AFFINITY.TARGETS) do
+		if math.abs((a[stat] or 0) - (b[stat] or 0)) > 0.035 then
+			return true
+		end
+	end
+	return false
+end
+
+function affinityWaitRoll(panel, dfKey, before)
+	local t0 = os.clock()
+	local minWait = AFFINITY.SKIP_ANIM and 0.12 or 0.45
+	while getgenv().__SIGMA_AFFINITY_RUN and os.clock() - t0 < AFFINITY.ROLL_WAIT do
+		local aff = affinityRead(panel, dfKey)
+		if affinityAffChanged(aff, before) and os.clock() - t0 >= minWait then
+			task.wait(AFFINITY.STABLE_WAIT)
+			return affinityRead(panel, dfKey)
+		end
+		task.wait(AFFINITY.POLL)
+	end
+	return affinityReadStable(panel, dfKey)
+end
+
+function affinityRunSlot1(entry, ui)
+	local key, panel = entry.key, entry.panel
+	local rolls = 0
+	while getgenv().__SIGMA_AFFINITY_RUN and AFFINITY.ON and rolls < AFFINITY.MAX_ROLLS do
+		if not next(AFFINITY.TARGETS) then return true end
+		local aff = affinityReadStable(panel, key)
+		affinityMarkSealed(aff)
+		local pending = affinityPendingStats(aff)
+		if #pending == 0 then
+			affinityLog(string.format("slot1 done | %s", key), 2)
+			return true
+		end
+		affinitySyncLocks(panel, aff, pending)
+		local cost = affinityRollCost(panel)
+		if affinityGetBeri(ui) < cost then
+			affinityLog(string.format("waiting Beli (need %d)", cost), 6)
+			task.wait(2)
+			continue
+		end
+		local before = {}
+		for s in pairs(AFFINITY.TARGETS) do before[s] = aff[s] end
+		if not affinityRoll(panel, key) then
+			task.wait(0.2)
+			continue
+		end
+		rolls += 1
+		affinityMarkSealed(affinityWaitRoll(panel, key, before))
+	end
+	return false
+end
+
+function affinityMain()
+	if not AFFINITY.ON or not next(AFFINITY.TARGETS) then return end
+	local ui = affinityOpenUI()
+	if not ui then
+		affinityLog("AffinityUI not found", 8)
+		return
+	end
+	local entry = affinityGetSlot1(ui, getData())
+	if not entry then
+		affinityLog("slot1 panel not found", 8)
+		return
+	end
+	affinityRunSlot1(entry, ui)
+end
+
+function stopAffinityLoop()
+	getgenv().__SIGMA_AFFINITY_RUN = false
+	AFFINITY.sealed = {}
+end
+
+function startAffinityLoop()
+	if getgenv().__SIGMA_AFFINITY_LOOP then return end
+	getgenv().__SIGMA_AFFINITY_LOOP = true
+	getgenv().__SIGMA_AFFINITY_RUN = true
+	task.spawn(function()
+		while getgenv().__SIGMA_AFFINITY_LOOP and AFFINITY.ON do
+			pcall(affinityMain)
+			if not getgenv().__SIGMA_AFFINITY_LOOP or not AFFINITY.ON then break end
+			local ui = affinityGetUI()
+			task.wait((not ui or not ui.Enabled) and 1 or 0.12)
+		end
+		stopAffinityLoop()
+		getgenv().__SIGMA_AFFINITY_LOOP = false
+	end)
+end
+
+function refreshAffinityLoop()
+	if AFFINITY.ON and next(AFFINITY.TARGETS) then
+		startAffinityLoop()
+	else
+		stopAffinityLoop()
+		getgenv().__SIGMA_AFFINITY_LOOP = false
+	end
+end
+
 function stepHakiFeatures()
 	if not hakiModeEnabled() then
 		stepHakiForceOff()
@@ -3885,6 +4239,40 @@ function SigmaFish.setAutoRayleigh(on)
 	ensureLoopRunning()
 end
 
+function SigmaFish.setAutoAffinity(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoAffinity = on == true
+	getgenv().SigmaFishConfig = cfg
+	AFFINITY.ON = cfg.AutoAffinity
+	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+	if AFFINITY.ON then
+		print("[Sigma Affinity] Auto Affinity ON | slot1 | targets:", table.concat(
+			(function()
+				local parts = {}
+				for _, s in ipairs(AFFINITY.STATS) do
+					if AFFINITY.TARGETS[s] then
+						parts[#parts + 1] = s .. "=" .. tostring(AFFINITY.TARGETS[s])
+					end
+				end
+				return parts
+			end)(), ", "
+		))
+	else
+		stopAffinityLoop()
+	end
+	refreshAffinityLoop()
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAffinityTarget(stat, value)
+	local cfg = getgenv().SigmaFishConfig or {}
+	local key = "Affinity" .. tostring(stat)
+	cfg[key] = value
+	getgenv().SigmaFishConfig = cfg
+	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+	if AFFINITY.ON then refreshAffinityLoop() end
+end
+
 function SigmaFish.applyConfig()
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
@@ -3916,6 +4304,16 @@ function SigmaFish.applyConfig()
 	if wantRay ~= RAYLEIGH.ON and SigmaFish.setAutoRayleigh then
 		SigmaFish.setAutoRayleigh(wantRay)
 	elseif wantRay then RAYLEIGH.ON = true end
+	local wantAff = cfg.AutoAffinity == true
+	if wantAff ~= AFFINITY.ON and SigmaFish.setAutoAffinity then
+		SigmaFish.setAutoAffinity(wantAff)
+	elseif wantAff then
+		AFFINITY.ON = true
+		AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+		refreshAffinityLoop()
+	end
+	if not wantAff then stopAffinityLoop() end
+	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
@@ -3977,10 +4375,13 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig.AutoBusoshoku = false
 	getgenv().SigmaFishConfig.FastHaki = false
 	getgenv().SigmaFishConfig.AutoRayleigh = false
+	getgenv().SigmaFishConfig.AutoAffinity = false
 	HAKI.AUTO_KEN = false
 	HAKI.AUTO_BUSO = false
 	HAKI.FAST = false
 	RAYLEIGH.ON = false
+	AFFINITY.ON = false
+	stopAffinityLoop()
 	STATE.cooking = false
 	STATE.pause = false
 	syncCfg()
