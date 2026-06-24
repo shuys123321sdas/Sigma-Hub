@@ -84,6 +84,9 @@ STATE = {
 	hakiHoldCF = nil,
 	hakiDrainAmount = nil,
 	hakiDrainSince = nil,
+	hakiFullStickySince = nil,
+	hakiLastBarAmount = nil,
+	hakiLastFastCast = 0,
 }
 
 QUEST = {
@@ -134,6 +137,7 @@ HAKI = {
 	FAST_EMPTY = 0.015,
 	FAST_CD = 0,
 	DRAIN_RESET_SEC = 5,
+	STUCK_FULL_SEC = 20,
 	STOP_LEVEL = 0,
 	MIN_MOB_LEVEL = 150,
 	MIN_Y = 210.6,
@@ -2929,6 +2933,35 @@ function BRING.releaseHold()
 	if BRING.HOLD_NOCLIP then BRING._applyNoclip(false) end
 end
 
+function BRING.teleportToCF(cf)
+	local hrp = getHRP()
+	if not hrp or not cf then return false end
+	if BRING.holdActive then
+		BRING.holdActive = false
+		pcall(function() hrp.Anchored = false end)
+	end
+	pcall(function() hrp.CFrame = cf end)
+	BRING.zeroVel(hrp)
+	BRING.holdCF = cf
+	return true
+end
+
+function BRING.lockAnchorAt(cf)
+	if not cf or not BRING.HOLD then BRING.releaseHold(); return false end
+	local hrp = getHRP()
+	if not hrp then return false end
+	BRING.holdCF = cf
+	pcall(function() hrp.CFrame = cf end)
+	BRING.zeroVel(hrp)
+	if BRING.HOLD_ANCHOR then pcall(function() hrp.Anchored = true end) end
+	BRING.holdActive = true
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum.AutoRotate = false; hum.PlatformStand = false end) end
+	if BRING.HOLD_NOCLIP then BRING._applyNoclip(true) end
+	BRING.ensureHoldLoop()
+	return true
+end
+
 function BRING.clusterAtHead(anchorPos, index)
 	local center = anchorPos + Vector3.new(0, BRING.HEAD_Y + (index - 1) * BRING.STACK_Y, 0)
 	if BRING.JITTER > 0 then
@@ -3008,18 +3041,7 @@ BRING.tickMobHolds = LPH_NO_VIRTUALIZE(function()
 end)
 
 function BRING.setHold(cf)
-	if not cf or not BRING.HOLD then BRING.releaseHold(); return end
-	BRING.holdCF = cf
-	BRING.holdActive = true
-	local hrp = getHRP()
-	if not hrp then return end
-	pcall(function() hrp.CFrame = cf end)
-	BRING.zeroVel(hrp)
-	if BRING.HOLD_ANCHOR then pcall(function() hrp.Anchored = true end) end
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then pcall(function() hum.AutoRotate = false; hum.PlatformStand = false end) end
-	if BRING.HOLD_NOCLIP then BRING._applyNoclip(true) end
-	BRING.ensureHoldLoop()
+	return BRING.lockAnchorAt(cf)
 end
 
 BRING.tickHold = LPH_NO_VIRTUALIZE(function()
@@ -3045,15 +3067,15 @@ function BRING.ensureHoldLoop()
 end
 
 function BRING.tpAtMob(model)
-	local hrp = getHRP()
 	local mobRoot = model and BRING.mobRoot(model)
-	if not hrp or not mobRoot then return false end
-	local pos = mobRoot.Position
-	local cf = CFrame.new(pos)
-	pcall(function() hrp.CFrame = cf end)
-	BRING.zeroVel(hrp)
-	BRING.setHold(cf)
-	return true
+	if not mobRoot then return false end
+	local cf = CFrame.new(mobRoot.Position)
+	if not BRING.teleportToCF(cf) then return false end
+	task.wait(0.06)
+	local hrp = getHRP()
+	if not hrp then return false end
+	if (hrp.Position - mobRoot.Position).Magnitude > 10 then return false end
+	return BRING.lockAnchorAt(cf)
 end
 
 function BRING.tpNearMob(model)
@@ -3292,15 +3314,29 @@ end
 
 function hakiSetupAnchor(target)
 	if not target then return false end
-	BRING.tpAtMob(target)
+	local mobRoot = BRING.mobRoot(target)
+	local hrp = getHRP()
+	if not mobRoot or not hrp then return false end
+	local cf = CFrame.new(mobRoot.Position)
+	if not BRING.teleportToCF(cf) then return false end
+	task.wait(0.08)
+	hrp = getHRP()
+	mobRoot = BRING.mobRoot(target)
+	if not hrp or not mobRoot then return false end
+	if (hrp.Position - mobRoot.Position).Magnitude > 10 then
+		hakiLog("fast:tpfail", string.format("TP miss mob %s dist=%.1f", target.Name,
+			(hrp.Position - mobRoot.Position).Magnitude), 2)
+		return false
+	end
+	if not BRING.lockAnchorAt(cf) then return false end
 	STATE.hakiHoldCF = BRING.holdCF
 	STATE.hakiHoldMob = target
 	return true
 end
 
 function hakiBringOnly()
-	if STATE.hakiHoldCF then
-		BRING.setHold(STATE.hakiHoldCF)
+	if not BRING.holdActive or not STATE.hakiHoldCF then
+		return 0
 	end
 	BRING.startNearPull(hakiBringOpts())
 	local n = BRING.run({ haki = true })
@@ -3323,6 +3359,7 @@ end
 
 function hakiTryFarmReset()
 	hakiClearDrainWatch()
+	hakiClearFullSticky()
 	BRING.releaseAllMobHolds()
 	local target = hakiEnsureTarget()
 	if target then
@@ -3353,9 +3390,9 @@ function hakiFarmBringTarget(target, needAnchor)
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if hum then pcall(function() hum:UnequipTools() end) end
 	if needAnchor or not BRING.holdActive or not STATE.hakiHoldCF then
-		hakiSetupAnchor(target)
-	else
-		BRING.setHold(STATE.hakiHoldCF)
+		if not hakiSetupAnchor(target) then
+			return target, 0
+		end
 	end
 	return target, hakiBringOnly()
 end
@@ -3396,6 +3433,57 @@ function hakiClearDrainWatch()
 	STATE.hakiDrainSince = nil
 end
 
+function hakiClearFullSticky()
+	STATE.hakiFullStickySince = nil
+end
+
+function hakiFastTanking()
+	if not HAKI.FAST then return false end
+	if not (STATE.hakiFastRunning or STATE.hakiWasFull) then return false end
+	if BRING.holdActive and STATE.hakiHoldCF then return true end
+	local ratio = select(1, readHakiBar())
+	return ratio ~= nil and ratio >= HAKI.FULL_RATIO
+end
+
+function stepFastHakiEnsureCast()
+	if not hakiFastTanking() then return end
+	local char = player.Character
+	if not char or not hakiAbilityUnlocked("Haki") then return end
+	local now = os.clock()
+	if char:GetAttribute("Haki") ~= true then
+		if now - (STATE.hakiLastFastCast or 0) >= HAKI.SKILL_RETRY then
+			STATE.hakiLastFastCast = now
+			local ok = pressHakiSkill("Haki")
+			hakiLog("fast:cast", string.format("Busoshoku OFF -> press (ok=%s)", tostring(ok)), 2)
+		end
+	end
+	if HAKI.AUTO_KEN and hakiAbilityUnlocked("Observation")
+		and char:GetAttribute("Observation") ~= true then
+		if now - (STATE.hakiLastKen or 0) >= HAKI.SKILL_RETRY then
+			STATE.hakiLastKen = now
+			pressHakiSkill("Observation")
+		end
+	end
+end
+
+function hakiFullStuck(ratio, amount, now)
+	if amount ~= STATE.hakiLastBarAmount then
+		STATE.hakiLastBarAmount = amount
+		if ratio < HAKI.FULL_RATIO then
+			hakiClearFullSticky()
+		end
+	end
+	if ratio < HAKI.FULL_RATIO or not BRING.holdActive or not hakiNearHoldMob() then
+		hakiClearFullSticky()
+		return false
+	end
+	if not STATE.hakiFullStickySince then
+		STATE.hakiFullStickySince = now
+		return false
+	end
+	return (now - STATE.hakiFullStickySince) >= HAKI.STUCK_FULL_SEC
+end
+
 function hakiDrainStuck(amount, now)
 	if amount == nil then
 		hakiClearDrainWatch()
@@ -3421,6 +3509,7 @@ function tryHakiRejoin()
 	STATE.hakiFastRunning = false
 	STATE.hakiWasFull = false
 	hakiClearDrainWatch()
+	hakiClearFullSticky()
 	hakiReleaseFarm()
 	print("[Sigma Haki] fast:rejoin -> TeleportService:Teleport(game.PlaceId)")
 	pcall(function() TeleportService:Teleport(game.PlaceId) end)
@@ -3430,15 +3519,16 @@ end
 function stepHakiForceOff()
 	local char = player.Character
 	if not char then return end
+	local fastTank = hakiFastTanking()
 	local now = os.clock()
-	if not HAKI.AUTO_KEN and char:GetAttribute("Observation") == true then
+	if not HAKI.AUTO_KEN and not fastTank and char:GetAttribute("Observation") == true then
 		if now - (STATE.hakiLastKenOff or 0) >= HAKI.SKILL_RETRY then
 			STATE.hakiLastKenOff = now
 			pressHakiSkill("Observation")
 			hakiLog("ken:off", "Auto Ken OFF -> disable Observation", 2)
 		end
 	end
-	if not HAKI.AUTO_BUSO and char:GetAttribute("Haki") == true then
+	if not HAKI.AUTO_BUSO and not fastTank and char:GetAttribute("Haki") == true then
 		if now - (STATE.hakiLastBusoOff or 0) >= HAKI.SKILL_RETRY then
 			STATE.hakiLastBusoOff = now
 			pressHakiSkill("Haki")
@@ -3533,6 +3623,13 @@ function stepFastHaki()
 		and hakiDrainStuck(amount, now) then
 		return hakiTryFarmReset()
 	end
+	if ratio >= HAKI.FULL_RATIO and hakiFullStuck(ratio, amount, now) then
+		print(string.format(
+			"[Sigma Haki] fast:stuck-full bar %d%% (%d/%d) unchanged %ds -> reset",
+			pct, amount or 0, cap or 0, HAKI.STUCK_FULL_SEC
+		))
+		return hakiTryFarmReset()
+	end
 	if not ((STATE.hakiFastRunning or STATE.hakiWasFull) and ratio < HAKI.FULL_RATIO) then
 		hakiClearDrainWatch()
 	end
@@ -3547,14 +3644,17 @@ function stepFastHaki()
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
 		STATE.hakiWasFull = true
+		stepFastHakiEnsureCast()
 		local needAnchor = not BRING.holdActive or not STATE.hakiHoldCF
 		local _, brought = hakiFarmBringTarget(target, needAnchor)
 		hakiLog("fast:full", string.format(
-			"bar full %d%% (%d/%d) | bring=%d anchor=%s mob=%s",
-			pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive), target.Name
+			"bar full %d%% (%d/%d) | bring=%d anchor=%s haki=%s mob=%s",
+			pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive),
+			tostring(player.Character and player.Character:GetAttribute("Haki")), target.Name
 		), 3)
 		return true
 	end
+	stepFastHakiEnsureCast()
 	local needAnchor = not BRING.holdActive or not STATE.hakiHoldCF
 	local _, brought = hakiFarmBringTarget(target, needAnchor)
 	hakiLog("fast:fill", string.format(
@@ -4182,6 +4282,7 @@ function startHubLoop()
 			STATE.hakiWasFull = false
 			STATE.hakiHoldCF = nil
 			hakiClearDrainWatch()
+			hakiClearFullSticky()
 		end)
 	end
 	task.spawn(function()
