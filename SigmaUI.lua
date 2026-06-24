@@ -13,31 +13,32 @@ local function uiLog(opts, msg)
 	end
 end
 
-local function safeStatusText(Fish)
-	if not Fish or not Fish.getStatus then
-		return "Main.lua: not loaded"
+local function formatUptime(seconds)
+	local s = math.max(0, math.floor(seconds or 0))
+	local h = math.floor(s / 3600)
+	local m = math.floor((s % 3600) / 60)
+	local sec = s % 60
+	if h > 0 then
+		return string.format("%02d:%02d:%02d", h, m, sec)
 	end
-	local ok, result = pcall(function()
-		return Fish.getStatus()
-	end)
-	if not ok then
-		return "Status error: " .. tostring(result)
+	return string.format("%02d:%02d", m, sec)
+end
+
+local function themeNames(hub)
+	local names = {}
+	if hub and hub.GetThemes then
+		local themes = hub:GetThemes()
+		if type(themes) == "table" then
+			for key in pairs(themes) do
+				names[#names + 1] = key
+			end
+		end
 	end
-	local s = result
-	return table.concat({
-		"Auto Spawn: " .. (s.autoSpawn and "ON" or "OFF"),
-		"Anti AFK: " .. (s.antiAfk and "ON" or "OFF"),
-		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Rod quest: " .. tostring(s.rodPhase or "-"),
-		"Has rod: " .. (s.hasRod and "yes" or "no"),
-		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
-		"Picked: " .. tostring(s.questPick ~= "" and s.questPick or "-"),
-		"Auto Expertise: " .. (s.autoExpertise and "ON" or "OFF"),
-		"Active quest: " .. tostring(s.questActive or "-"),
-		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
-		"Sell at: " .. tostring(s.sellAt or "?"),
-		"Minigame: " .. (s.inMinigame and "active" or "idle"),
-	}, "\n")
+	if #names < 1 then
+		names = { "Sigma", "Dark", "Violet", "Light" }
+	end
+	table.sort(names)
+	return names
 end
 
 local function hideEmptyPlaceholder(tab)
@@ -70,6 +71,7 @@ function SigmaUI.build(hub, Fish, opts)
 		hub:Notify({ Title = title, Content = content, Duration = 3 })
 	end
 	local PRIMARY = opts.primary or Color3.fromRGB(139, 92, 246)
+	local uiOpenAt = os.clock()
 
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoFish = cfg.AutoFish == true
@@ -78,11 +80,17 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoCookSell = cfg.AutoCookSell ~= false
 	cfg.AutoSpawn = cfg.AutoSpawn ~= false
 	cfg.AntiAfk = cfg.AntiAfk ~= false
+	cfg.AutoReloadConfig = cfg.AutoReloadConfig ~= false
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
 	cfg.QuestPick = cfg.QuestPick or {}
+	cfg.Theme = cfg.Theme or "Sigma"
 	getgenv().SigmaFishConfig = cfg
 
 	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {}
+	local themes = themeNames(hub)
+	if not table.find(themes, cfg.Theme) then
+		cfg.Theme = themes[1] or "Sigma"
+	end
 
 	uiLog(opts, "CreateWindow...")
 	local Window = hub:CreateWindow({
@@ -90,7 +98,7 @@ function SigmaUI.build(hub, Fish, opts)
 		Author = "One Piece: Final",
 		Icon = "fish",
 		Folder = "SigmaHub",
-		Theme = "Sigma",
+		Theme = cfg.Theme,
 		Size = UDim2.new(0, 620, 0, 480),
 		ToggleKey = Enum.KeyCode.RightShift,
 		Resizable = true,
@@ -113,9 +121,75 @@ function SigmaUI.build(hub, Fish, opts)
 		},
 	})
 
+	local configFile
 	if Window.ConfigManager then
-		local c = Window.ConfigManager:Config("sigma-fish")
-		if c and c.SetAsCurrent then c:SetAsCurrent() end
+		configFile = Window.ConfigManager:Config("sigma-fish")
+		if configFile and configFile.SetAsCurrent then
+			configFile:SetAsCurrent()
+		end
+		if configFile and configFile.SetAutoLoad then
+			configFile:SetAutoLoad(cfg.AutoReloadConfig == true)
+		end
+	end
+
+	local function persistConfigMeta()
+		if not configFile then return end
+		if configFile.Set then
+			configFile:Set("Theme", cfg.Theme or (hub.GetCurrentTheme and hub:GetCurrentTheme()) or "Sigma")
+			configFile:Set("AutoReloadConfig", cfg.AutoReloadConfig == true)
+		end
+	end
+
+	local function saveConfig()
+		if not configFile or not configFile.Save then
+			notify(hub, "Config", "Config system không khả dụng (Studio / no writefile)", "triangle-alert")
+			return false
+		end
+		persistConfigMeta()
+		local ok, err = pcall(function()
+			configFile:Save()
+		end)
+		if ok then
+			notify(hub, "Config", "Đã lưu SigmaHub/config/sigma-fish.json", "save", 3)
+			return true
+		end
+		notify(hub, "Config", "Lưu thất bại: " .. tostring(err), "triangle-alert", 4)
+		return false
+	end
+
+	local function loadConfig(silent)
+		if not configFile or not configFile.Load then
+			if not silent then
+				notify(hub, "Config", "Config system không khả dụng", "triangle-alert")
+			end
+			return false
+		end
+		local ok, err = pcall(function()
+			configFile:Load()
+		end)
+		if not ok then
+			if not silent then
+				notify(hub, "Config", "Load thất bại: " .. tostring(err), "triangle-alert", 4)
+			end
+			return false
+		end
+		local theme = configFile.Get and configFile:Get("Theme")
+		if theme and hub.SetTheme then
+			hub:SetTheme(theme)
+			cfg.Theme = theme
+		end
+		local autoLoad = configFile.Get and configFile:Get("AutoReloadConfig")
+		if autoLoad ~= nil then
+			cfg.AutoReloadConfig = autoLoad == true
+		end
+		getgenv().SigmaFishConfig = cfg
+		if Fish and Fish.applyConfig then
+			pcall(function() Fish.applyConfig() end)
+		end
+		if not silent then
+			notify(hub, "Config", "Đã load config", "folder-open", 3)
+		end
+		return true
 	end
 
 	uiLog(opts, "Creating tabs...")
@@ -126,23 +200,19 @@ function SigmaUI.build(hub, Fish, opts)
 
 	uiLog(opts, "Populating tab controls (sync)...")
 	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
-	local autoSpawnToggle, antiAfkToggle
+	local autoSpawnToggle, antiAfkToggle, themeDropdown, autoReloadToggle
 	local populateOk, populateErr = pcall(function()
-		local statusPara = MainTab:Paragraph({
-			Title = "Status",
-			Desc = safeStatusText(Fish),
-			Buttons = {
-				{
-					Title = "Refresh",
-					Icon = "refresh-cw",
-					Callback = function()
-						if statusPara and statusPara.SetDesc then
-							statusPara:SetDesc(safeStatusText(Fish))
-						end
-					end,
-				},
-			},
+		local uptimePara = MainTab:Paragraph({
+			Title = "Session",
+			Desc = formatUptime(0),
 		})
+
+		task.spawn(function()
+			while uptimePara and uptimePara.SetDesc do
+				uptimePara:SetDesc(formatUptime(os.clock() - uiOpenAt))
+				task.wait(1)
+			end
+		end)
 
 		MainTab:Section({ Title = "General", Icon = "shield", Box = true, BoxBorder = true })
 
@@ -157,7 +227,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoSpawn = v == true
 				if Fish and Fish.setAutoSpawn then Fish.setAutoSpawn(v) end
 				notify(hub, "Auto Spawn", v and "ON" or "OFF", "play", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -172,7 +241,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AntiAfk = v == true
 				if Fish and Fish.setAntiAfk then Fish.setAntiAfk(v) end
 				notify(hub, "Anti AFK", v and "ON" or "OFF", "shield", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -192,7 +260,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoFish = v == true
 				Fish.setAutoFish(v)
 				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -206,7 +273,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoCookSell = v == true
 				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
 				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -232,7 +298,6 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				Fish.cookSell()
 				notify(hub, "Cook+Sell", "Done", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -249,7 +314,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.QuestPick = v
 				if Fish and Fish.setQuestPick then Fish.setQuestPick(v) end
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -267,7 +331,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoQuest = v == true
 				Fish.setAutoQuest(v)
 				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -287,7 +350,6 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoExpertise = v == true
 				Fish.setAutoExpertise(v)
 				notify(hub, "Expertise", v and "ON — Old Beggar" or "OFF", "book-open", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -300,6 +362,65 @@ function SigmaUI.build(hub, Fish, opts)
 			}, "\n"),
 		})
 
+		SettingsTab:Section({ Title = "Appearance", Icon = "palette", Box = true, BoxBorder = true })
+
+		themeDropdown = SettingsTab:Dropdown({
+			Title = "Theme",
+			Desc = "Đổi màu giao diện WindUI",
+			Values = themes,
+			Value = cfg.Theme,
+			Flag = "Sigma_Theme",
+			Callback = function(v)
+				cfg.Theme = v
+				getgenv().SigmaFishConfig = cfg
+				if hub.SetTheme then hub:SetTheme(v) end
+				if configFile and configFile.Set then configFile:Set("Theme", v) end
+			end,
+		})
+
+		SettingsTab:Section({ Title = "Config", Icon = "save", Box = true, BoxBorder = true })
+
+		SettingsTab:Button({
+			Title = "Save Config",
+			Icon = "save",
+			Color = PRIMARY,
+			Callback = function()
+				saveConfig()
+			end,
+		})
+
+		SettingsTab:Button({
+			Title = "Load Config",
+			Icon = "folder-open",
+			Callback = function()
+				loadConfig(false)
+			end,
+		})
+
+		autoReloadToggle = SettingsTab:Toggle({
+			Title = "Auto Load Config",
+			Desc = "Tự load config đã lưu mỗi lần mở hub",
+			Value = cfg.AutoReloadConfig ~= false,
+			Default = true,
+			Flag = "Sigma_AutoReloadConfig",
+			Callback = function(v)
+				cfg.AutoReloadConfig = v == true
+				getgenv().SigmaFishConfig = cfg
+				if configFile and configFile.SetAutoLoad then
+					configFile:SetAutoLoad(v == true)
+				end
+				if configFile and configFile.Set then
+					configFile:Set("AutoReloadConfig", v == true)
+				end
+				if v and configFile and configFile.Save then
+					persistConfigMeta()
+					pcall(function() configFile:Save() end)
+				end
+			end,
+		})
+
+		SettingsTab:Section({ Title = "Hub", Icon = "refresh-cw", Box = true, BoxBorder = true })
+
 		SettingsTab:Button({
 			Title = "Reload Hub",
 			Icon = "refresh-cw",
@@ -309,6 +430,11 @@ function SigmaUI.build(hub, Fish, opts)
 					if getgenv().ReloadSigmaHub then getgenv().ReloadSigmaHub() end
 				end)
 			end,
+		})
+
+		SettingsTab:Paragraph({
+			Title = "Config path",
+			Desc = "SigmaHub/SigmaHub/config/sigma-fish.json",
 		})
 	end)
 
@@ -333,6 +459,12 @@ function SigmaUI.build(hub, Fish, opts)
 	getgenv().__SIGMA_UI_COUNTS = counts
 
 	task.spawn(function()
+		if cfg.AutoReloadConfig ~= false then
+			loadConfig(true)
+		end
+	end)
+
+	task.spawn(function()
 		task.wait(0.85)
 		if not Fish or not Fish.applyConfig then return end
 		local c = getgenv().SigmaFishConfig or {}
@@ -354,11 +486,20 @@ function SigmaUI.build(hub, Fish, opts)
 		if antiAfkToggle and antiAfkToggle.Value ~= nil then
 			c.AntiAfk = antiAfkToggle.Value == true
 		end
+		if autoReloadToggle and autoReloadToggle.Value ~= nil then
+			c.AutoReloadConfig = autoReloadToggle.Value == true
+		end
+		if themeDropdown and themeDropdown.Value ~= nil then
+			c.Theme = themeDropdown.Value
+		end
 		if questDropdown and questDropdown.Value ~= nil then
 			c.QuestPick = questDropdown.Value
 		end
 		getgenv().SigmaFishConfig = c
-		Fish.applyConfig()
+		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
+		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
+		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
+		if Fish.applyConfig then Fish.applyConfig() end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
 
