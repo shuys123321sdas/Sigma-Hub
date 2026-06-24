@@ -723,13 +723,8 @@ end
 
 function samClickNPC(model)
 	if not model then return false end
-	local part = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart", true)
-	if not part then return false end
-	tpNear(model)
 	setMerchant(model)
-	local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
-	if cd and fireclickdetector then pcall(fireclickdetector, cd) end
-	task.wait(0.15)
+	task.wait(0.05)
 	return true
 end
 
@@ -753,13 +748,10 @@ function samClaimCompass()
 	if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
 	samClickNPC(m)
 	task.wait(SAM.CLAIM_WAIT)
-	setMerchant(m)
-	local cur = player:FindFirstChild("CurrentMerchant")
-	local merchant = (cur and cur:IsA("ObjectValue") and cur.Value) or m
 	local canClaim = math.floor(tonumber(stats.Compass) or 0)
 	local amount = math.min(canClaim, 10, remaining)
 	if amount < 1 then return false end
-	local ok = exec("Sam", { "ClaimAmount", merchant, amount })
+	local ok = exec("Sam", { "ClaimAmount", m, amount })
 	task.defer(samCloseDialogue)
 	return ok ~= false
 end
