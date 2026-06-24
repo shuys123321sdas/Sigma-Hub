@@ -326,7 +326,8 @@ function remoteQuestClaim(model, questName)
 end
 
 function remoteQuestDeliver(model, itemName, questName)
-	if not questActionReady("deliver:" .. tostring(questName or itemName), 2) then return false end
+	local key = "deliver:" .. tostring(questName or "") .. ":" .. tostring(itemName or "")
+	if not questActionReady(key, 1.5) then return false end
 	return questExec(model, "Deliver", itemName)
 end
 
@@ -954,19 +955,27 @@ function m1AttackOnce()
 end
 
 function mobAttackOnce(tool)
-	if tool and tool.Parent then
-		local ok = pcall(function() tool:Activate() end)
-		if ok then return true end
+	local char = player.Character
+	if tool and char and tool.Parent == char then
+		pcall(function() tool:Activate() end)
 	end
 	return m1AttackOnce()
 end
 
-function startM1Loop()
+function startM1Loop(aliveFn)
 	local run = STATE.m1RunId + 1
 	STATE.m1RunId = run
 	task.spawn(function()
+		pcall(function()
+			if VirtualUser and VirtualUser.CaptureController then
+				VirtualUser:CaptureController()
+			end
+		end)
 		while isActive() and STATE.m1RunId == run do
-			m1AttackOnce()
+			if not aliveFn or aliveFn() then
+				local tool = ensureCombatReady()
+				if tool then mobAttackOnce(tool) end
+			end
 			task.wait(QUEST.ATTACK_CD)
 			if not isActive() or STATE.m1RunId ~= run then break end
 		end
@@ -995,7 +1004,7 @@ function attackLoopOnMob(mob, mode)
 	if not questMobKillEnabled() or not questModeOk(mode) then return false end
 	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return true end
-	local tool = ensureCombatReady()
+	ensureCombatReady()
 	tpNearMob(mob, true)
 	local lastHp, stallAt = hum.Health, os.clock()
 	while isActive() and questMobKillEnabled() and questModeOk(mode) do
@@ -1011,8 +1020,7 @@ function attackLoopOnMob(mob, mode)
 				zeroHRPVel(hrp)
 			end
 		end
-		if not tool or not tool.Parent then tool = ensureCombatReady() end
-		mobAttackOnce(tool)
+		ensureCombatReady()
 		task.wait(QUEST.ATTACK_CD)
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
@@ -1031,12 +1039,13 @@ function attackBurstOnMob(mob, mode)
 	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return true end
 	setQuestMobKill(true)
-	pcall(function()
-		if VirtualUser and VirtualUser.CaptureController then
-			VirtualUser:CaptureController()
-		end
-	end)
+	local aliveFn = function()
+		return questMobKillEnabled() and questModeOk(mode)
+	end
+	startM1Loop(aliveFn)
+	ensureCombatReady()
 	local ok = attackLoopOnMob(mob, mode)
+	stopM1Loop()
 	setQuestMobKill(false)
 	hum = mob:FindFirstChildOfClass("Humanoid")
 	return ok or not hum or hum.Health <= 0
@@ -1703,7 +1712,7 @@ function deliverQuestItems(npc, info)
 	local any = false
 	for _, item in ipairs(info.deliverItems or {}) do
 		if hasItem(item) then
-			local okDeliver = q and (q.Completed == true or questNeedsDeliverItem(q, item))
+			local okDeliver = q and (q.Completed == true or q.Active == info.quest or questNeedsDeliverItem(q, item))
 			if okDeliver then
 				if remoteQuestDeliver(model, item, info.quest) then
 					any = true
@@ -1880,15 +1889,19 @@ end
 
 function deliverCollectItems(npc, info)
 	local q = getQuests()
-	if not q or q.Completed ~= true then return false end
-	if not questActionReady("deliver:" .. tostring(info.quest), 2.5) then return false end
+	if not q then return false end
+	if q.Active ~= info.quest and q.Completed ~= true then return false end
+	if not questActionReady("collectDeliver:" .. tostring(info.quest), 2) then return false end
 	local model = findNPC(npc)
 	if not model then return false end
+	local onQuest = q.Active == info.quest
 	local any = false
 	for _, it in ipairs(info.deliverItems or {}) do
 		if countItem(it) > 0 then
-			if remoteQuestDeliver(model, it, info.quest) then
-				any = true
+			if q.Completed == true or onQuest or questNeedsDeliverItem(q, it) then
+				if remoteQuestDeliver(model, it, info.quest) then
+					any = true
+				end
 			end
 		end
 	end
@@ -1964,6 +1977,7 @@ function stepCollectQuest(npc, info, mode)
 					if npc == "Old Beggar" then
 						useGoldenApplesForOldBeggar()
 						usePearsForOldBeggar()
+						deliverCollectItems(npc, info)
 					end
 					return true
 				end
