@@ -167,6 +167,8 @@ function SigmaUI.build(hub, Fish, opts)
 	getgenv().SigmaApplyUiHideName = applyUiHideName
 
 	local configFile
+	local syncConfigFromUi
+
 	if Window.ConfigManager then
 		configFile = Window.ConfigManager:Config("sigma-fish")
 		if configFile and configFile.SetAsCurrent then
@@ -177,11 +179,31 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 	end
 
+	local function copyConfigTable(src)
+		local out = {}
+		if type(src) ~= "table" then return out end
+		for k, v in pairs(src) do
+			if type(v) == "table" then
+				local nested = {}
+				for k2, v2 in pairs(v) do nested[k2] = v2 end
+				out[k] = nested
+			else
+				out[k] = v
+			end
+		end
+		return out
+	end
+
 	local function persistConfigMeta()
 		if not configFile then return end
+		if syncConfigFromUi then syncConfigFromUi(false) end
+		local snap = copyConfigTable(getgenv().SigmaFishConfig or cfg)
+		cfg = snap
+		getgenv().SigmaFishConfig = snap
 		if configFile.Set then
-			configFile:Set("Theme", cfg.Theme or (hub.GetCurrentTheme and hub:GetCurrentTheme()) or "Sigma")
-			configFile:Set("AutoReloadConfig", cfg.AutoReloadConfig == true)
+			configFile:Set("Theme", snap.Theme or (hub.GetCurrentTheme and hub:GetCurrentTheme()) or "Sigma")
+			configFile:Set("AutoReloadConfig", snap.AutoReloadConfig == true)
+			configFile:Set("SigmaFishConfig", snap)
 		end
 	end
 
@@ -218,6 +240,22 @@ function SigmaUI.build(hub, Fish, opts)
 			end
 			return false
 		end
+		task.wait(0.35)
+		local snap = configFile.Get and configFile:Get("SigmaFishConfig")
+		if type(snap) == "table" then
+			local merged = copyConfigTable(getgenv().SigmaFishConfig or cfg)
+			for k, v in pairs(snap) do
+				if type(v) == "table" then
+					local nested = {}
+					for k2, v2 in pairs(v) do nested[k2] = v2 end
+					merged[k] = nested
+				else
+					merged[k] = v
+				end
+			end
+			cfg = merged
+			getgenv().SigmaFishConfig = merged
+		end
 		local theme = configFile.Get and configFile:Get("Theme")
 		if theme and hub.SetTheme then
 			hub:SetTheme(theme)
@@ -227,8 +265,9 @@ function SigmaUI.build(hub, Fish, opts)
 		if autoLoad ~= nil then
 			cfg.AutoReloadConfig = autoLoad == true
 		end
-		getgenv().SigmaFishConfig = cfg
-		if Fish and Fish.applyConfig then
+		if syncConfigFromUi then
+			syncConfigFromUi(true)
+		elseif Fish and Fish.applyConfig then
 			pcall(function() Fish.applyConfig() end)
 		end
 		if not silent then
@@ -256,7 +295,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoSkillToggle, skillKeysDropdown, skillHoldInput
 	local autoWhitelistToggle, rejoinWhitelistInput
 	local cacheCountPara, cacheUseDropdown, cacheDropDropdown
-	local autoCacheDropToggle, autoUseConsumablesToggle
+	local autoCacheDropToggle, autoUseConsumablesToggle, sellAtSlider
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -346,12 +385,13 @@ function SigmaUI.build(hub, Fish, opts)
 			end,
 		})
 
-		FishTab:Slider({
+		sellAtSlider = FishTab:Slider({
 			Title = "Cook + Sell Threshold",
 			Value = { Min = 5, Max = 80, Default = cfg.SellAt },
 			Flag = "Sigma_FishSellAt",
 			Callback = function(v)
 				if Fish and Fish.setSellAt then Fish.setSellAt(v) end
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SellAt = v
 			end,
 		})
@@ -915,15 +955,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	getgenv().__SIGMA_UI_COUNTS = counts
 
-	task.spawn(function()
-		if cfg.AutoReloadConfig ~= false then
-			loadConfig(true)
-		end
-	end)
-
-	task.spawn(function()
-		task.wait(0.85)
-		if not Fish or not Fish.applyConfig then return end
+	syncConfigFromUi = function(applyBackend)
 		local c = getgenv().SigmaFishConfig or {}
 		if autoFishToggle and autoFishToggle.Value ~= nil then c.AutoFish = autoFishToggle.Value == true end
 		if autoQuestToggle and autoQuestToggle.Value ~= nil then c.AutoQuest = autoQuestToggle.Value == true end
@@ -961,10 +993,20 @@ function SigmaUI.build(hub, Fish, opts)
 		if autoUseConsumablesToggle and autoUseConsumablesToggle.Value ~= nil then
 			c.AutoUseConsumables = autoUseConsumablesToggle.Value ~= false
 		end
+		if sellAtSlider and sellAtSlider.Value ~= nil then
+			local n = tonumber(sellAtSlider.Value)
+			if n then c.SellAt = n end
+		end
+		cfg = c
 		getgenv().SigmaFishConfig = c
+		if not applyBackend or not Fish then return c end
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
 		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
+		if Fish.setAutoCookSell then Fish.setAutoCookSell(c.AutoCookSell ~= false) end
+		if Fish.setAutoSpawn then Fish.setAutoSpawn(c.AutoSpawn ~= false) end
+		if Fish.setAntiAfk then Fish.setAntiAfk(c.AntiAfk ~= false) end
+		if Fish.setSellAt then Fish.setSellAt(c.SellAt) end
 		if Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(c.AutoKenbunshoku == true) end
 		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
 		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
@@ -985,6 +1027,16 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(c.AutoUseConsumables ~= false) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		applyUiHideName()
+		return c
+	end
+
+	task.spawn(function()
+		if cfg.AutoReloadConfig ~= false then
+			loadConfig(true)
+		else
+			task.wait(0.85)
+			syncConfigFromUi(true)
+		end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
 
