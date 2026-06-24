@@ -25,17 +25,18 @@ local function safeStatusText(Fish)
 	local s = result
 	return table.concat({
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Auto Fisherman: " .. (s.autoQuest and "ON" or "OFF"),
-		"Phase: " .. tostring(s.fishermanPhase or "-"),
+		"Rod quest: " .. tostring(s.rodPhase or "-"),
+		"Has rod: " .. (s.hasRod and "yes" or "no"),
+		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
+		"Picked: " .. tostring(s.questPick ~= "" and s.questPick or "-"),
+		"Auto Expertise: " .. (s.autoExpertise and "ON" or "OFF"),
 		"Active quest: " .. tostring(s.questActive or "-"),
-		"Super Rod done: " .. (s.questDone and "yes" or "no"),
 		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
 		"Sell at: " .. tostring(s.sellAt or "?"),
 		"Minigame: " .. (s.inMinigame and "active" or "idle"),
 	}, "\n")
 end
 
--- Ẩn placeholder "This tab is Empty" khi đã có element (WindUI race)
 local function hideEmptyPlaceholder(tab)
 	if not tab or not tab.UIElements or not tab.UIElements.ContainerFrame then
 		return
@@ -70,10 +71,13 @@ function SigmaUI.build(hub, Fish, opts)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoFish = cfg.AutoFish == true
 	cfg.AutoQuest = cfg.AutoQuest == true
+	cfg.AutoExpertise = cfg.AutoExpertise == true
 	cfg.AutoCookSell = cfg.AutoCookSell ~= false
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
-	cfg.QuestSelect = "Fisherman"
+	cfg.QuestPick = cfg.QuestPick or {}
 	getgenv().SigmaFishConfig = cfg
+
+	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {}
 
 	uiLog(opts, "CreateWindow...")
 	local Window = hub:CreateWindow({
@@ -115,9 +119,8 @@ function SigmaUI.build(hub, Fish, opts)
 	local QuestTab = Window:Tab({ Title = "Quest", Icon = "list" })
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
-	-- Populate đồng bộ (task.defer trên một số executor không chạy → tab trống)
 	uiLog(opts, "Populating tab controls (sync)...")
-	local autoFishToggle, autoCookToggle, autoQuestToggle
+	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
 	local populateOk, populateErr = pcall(function()
 		local statusPara = MainTab:Paragraph({
 			Title = "Status",
@@ -139,7 +142,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoFishToggle = FishTab:Toggle({
 			Title = "Auto Fish",
-			Desc = "Quăng câu tại chỗ (chỉ câu thường). Auto Fisherman bật thì tự bật câu.",
+			Desc = "Câu tại chỗ + tự làm quest rod (Package→Wood→Task→Sturdy→Challenge→Super) + equip rod tốt nhất",
 			Value = cfg.AutoFish,
 			Flag = "Sigma_AutoFish",
 			Callback = function(v)
@@ -195,11 +198,26 @@ function SigmaUI.build(hub, Fish, opts)
 			end,
 		})
 
-		QuestTab:Section({ Title = "Fisherman", Icon = "list", Box = true, BoxBorder = true })
+		QuestTab:Section({ Title = "Auto Quest", Icon = "list", Box = true, BoxBorder = true })
+
+		questDropdown = QuestTab:Dropdown({
+			Title = "Select Quests",
+			Desc = "Chọn nhiều quest — bật Auto Quest để tự làm",
+			Values = questOptions,
+			Value = cfg.QuestPick,
+			Multi = true,
+			Flag = "Sigma_QuestPick",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.QuestPick = v
+				if Fish and Fish.setQuestPick then Fish.setQuestPick(v) end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
+			end,
+		})
 
 		autoQuestToggle = QuestTab:Toggle({
-			Title = "Auto Fisherman",
-			Desc = "Tự làm hết chuỗi quest → Super Rod: accept, câu, giao, claim. Bật = auto câu. Tắt = tắt câu.",
+			Title = "Auto Quest",
+			Desc = "Tự accept / deliver / claim quest đã chọn (quest kill mob cần farm tay)",
 			Value = cfg.AutoQuest,
 			Flag = "Sigma_AutoQuest",
 			Callback = function(v)
@@ -207,20 +225,40 @@ function SigmaUI.build(hub, Fish, opts)
 					notify(hub, "Quest", "Main.lua chưa load", "triangle-alert")
 					return
 				end
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoQuest = v == true
 				Fish.setAutoQuest(v)
-				notify(hub, "Fisherman", v and "ON — auto câu + quest" or "OFF — đã tắt câu", "list", 2)
+				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
+			end,
+		})
+
+		QuestTab:Section({ Title = "Expertise", Icon = "book-open", Box = true, BoxBorder = true })
+
+		autoExpertiseToggle = QuestTab:Toggle({
+			Title = "Auto Expertise",
+			Desc = "Chỉ làm quest Old Beggar (Humble Man #1) — giao trái cây từ xa",
+			Value = cfg.AutoExpertise,
+			Flag = "Sigma_AutoExpertise",
+			Callback = function(v)
+				if not Fish or not Fish.setAutoExpertise then
+					notify(hub, "Expertise", "Main.lua chưa load", "triangle-alert")
+					return
+				end
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoExpertise = v == true
+				Fish.setAutoExpertise(v)
+				notify(hub, "Expertise", v and "ON — Old Beggar" or "OFF", "book-open", 2)
 				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
 		QuestTab:Paragraph({
-			Title = "Chuỗi quest",
+			Title = "Ghi chú",
 			Desc = table.concat({
-				"1. Fisherman's Favor → nhận & giao Package → Wood Rod",
-				"2. Fisherman's Task → câu & giao cá quest → Sturdy Rod",
-				"3. Fisherman's Challenge → câu đủ số → Super Rod",
-				"",
-				"Chỉ cần bật Auto Fisherman — đứng yên, script tự làm hết.",
+				"Auto Fish: tự quest rod Fisherman (clone chưa rod → Package trước).",
+				"Auto Quest: Joe, Demon Hunter... (kill mob) cần farm combat riêng.",
+				"Auto Expertise: chỉ Old Beggar, tách khỏi Auto Quest.",
 			}, "\n"),
 		})
 
@@ -256,7 +294,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 	getgenv().__SIGMA_UI_COUNTS = counts
 
-	-- WindUI ConfigManager load toggle không gọi Callback → sync backend sau khi config apply
 	task.spawn(function()
 		task.wait(0.85)
 		if not Fish or not Fish.applyConfig then return end
@@ -267,16 +304,20 @@ function SigmaUI.build(hub, Fish, opts)
 		if autoQuestToggle and autoQuestToggle.Value ~= nil then
 			c.AutoQuest = autoQuestToggle.Value == true
 		end
+		if autoExpertiseToggle and autoExpertiseToggle.Value ~= nil then
+			c.AutoExpertise = autoExpertiseToggle.Value == true
+		end
 		if autoCookToggle and autoCookToggle.Value ~= nil then
 			c.AutoCookSell = autoCookToggle.Value ~= false
 		end
-		c.QuestSelect = "Fisherman"
+		if questDropdown and questDropdown.Value ~= nil then
+			c.QuestPick = questDropdown.Value
+		end
 		getgenv().SigmaFishConfig = c
 		Fish.applyConfig()
 		uiLog(opts, "Config synced from UI toggles")
 	end)
 
-	-- Chọn tab Main + ẩn empty placeholder sau khi WindUI spawn xong
 	task.spawn(function()
 		task.wait(0.15)
 		hideEmptyPlaceholder(MainTab)
@@ -286,13 +327,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 		if Window.SelectTab and MainTab.Index then
 			Window:SelectTab(MainTab.Index)
-		end
-
-		local total = counts.Main + counts.Fishing + counts.Quest + counts.Settings
-		if total == 0 then
-			warn("[SigmaUI] Tab trống — không có element nào được tạo!")
-		else
-			uiLog(opts, "UI visible — chọn tab Main")
 		end
 	end)
 
