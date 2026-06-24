@@ -169,16 +169,9 @@ function SigmaUI.build(hub, Fish, opts)
 	local configFile
 	local syncConfigFromUi
 	local applyConfigToUi
-
-	if Window.ConfigManager then
-		configFile = Window.ConfigManager:Config("sigma-fish")
-		if configFile and configFile.SetAsCurrent then
-			configFile:SetAsCurrent()
-		end
-		if configFile and configFile.SetAutoLoad then
-			configFile:SetAutoLoad(cfg.AutoReloadConfig == true)
-		end
-	end
+	local normalizeSigmaConfig
+	local collectConfigFromUi
+	local readConfigSnapshotFromFile
 
 	local function copyConfigTable(src)
 		local out = {}
@@ -195,10 +188,78 @@ function SigmaUI.build(hub, Fish, opts)
 		return out
 	end
 
+	normalizeSigmaConfig = function(raw)
+		local base = getgenv().SigmaFishConfig or {}
+		local c = copyConfigTable(type(raw) == "table" and raw or base)
+		c.AutoFish = c.AutoFish == true
+		c.AutoQuest = c.AutoQuest == true
+		c.AutoExpertise = c.AutoExpertise == true
+		c.AutoCookSell = c.AutoCookSell ~= false
+		c.AutoSpawn = c.AutoSpawn ~= false
+		c.AntiAfk = c.AntiAfk ~= false
+		c.AutoReloadConfig = c.AutoReloadConfig ~= false
+		c.AutoKenbunshoku = c.AutoKenbunshoku == true
+		c.AutoBusoshoku = c.AutoBusoshoku == true
+		c.FastHaki = c.FastHaki == true
+		c.AutoRayleigh = c.AutoRayleigh == true
+		c.AutoAffinity = c.AutoAffinity == true
+		c.HideName = c.HideName ~= false
+		c.AutoClaimSam = c.AutoClaimSam == true
+		c.AutoDropCompass = c.AutoDropCompass == true
+		c.AutoFindSam = c.AutoFindSam == true
+		c.AutoSkill = c.AutoSkill == true
+		c.AutoWhitelistRejoin = c.AutoWhitelistRejoin == true
+		c.AutoCacheDrop = c.AutoCacheDrop == true
+		c.AutoUseConsumables = c.AutoUseConsumables ~= false
+		c.SkillHoldSec = tonumber(c.SkillHoldSec) or 0.5
+		c.SkillKeys = c.SkillKeys or {}
+		c.RejoinWhitelist = tostring(c.RejoinWhitelist or "")
+		c.CacheUsePick = c.CacheUsePick or {}
+		c.CacheDropPick = c.CacheDropPick or {}
+		c.SellAt = tonumber(c.SellAt) or 40
+		c.QuestPick = c.QuestPick or {}
+		c.Theme = c.Theme or cfg.Theme or "Sigma"
+		return c
+	end
+
+	readConfigSnapshotFromFile = function()
+		if not configFile or not configFile.Path then return nil end
+		if type(isfile) ~= "function" or not isfile(configFile.Path) then return nil end
+		if type(readfile) ~= "function" then return nil end
+		local ok, data = pcall(function()
+			return game:GetService("HttpService"):JSONDecode(readfile(configFile.Path))
+		end)
+		if not ok or type(data) ~= "table" then return nil end
+		local custom = data.__custom
+		if type(custom) == "table" and type(custom.SigmaFishConfig) == "table" then
+			return copyConfigTable(custom.SigmaFishConfig)
+		end
+		return nil
+	end
+
+	local function reinforceLoadedConfig(c)
+		if type(c) ~= "table" then return end
+		c = normalizeSigmaConfig(c)
+		cfg = c
+		getgenv().SigmaFishConfig = c
+		if applyConfigToUi then applyConfigToUi(c) end
+		applyBackendFromConfig(c)
+	end
+
+	if Window.ConfigManager then
+		configFile = Window.ConfigManager:Config("sigma-fish")
+		if configFile and configFile.SetAsCurrent then
+			configFile:SetAsCurrent()
+		end
+		if configFile and configFile.SetAutoLoad then
+			configFile:SetAutoLoad(cfg.AutoReloadConfig == true)
+		end
+	end
+
 	local function persistConfigMeta()
 		if not configFile then return end
 		if syncConfigFromUi then syncConfigFromUi(false) end
-		local snap = copyConfigTable(getgenv().SigmaFishConfig or cfg)
+		local snap = normalizeSigmaConfig(getgenv().SigmaFishConfig or cfg)
 		cfg = snap
 		getgenv().SigmaFishConfig = snap
 		if configFile.Set then
@@ -227,87 +288,75 @@ function SigmaUI.build(hub, Fish, opts)
 
 	local function applyBackendFromConfig(c)
 		if not c then return end
+		c = normalizeSigmaConfig(c)
 		cfg = c
 		getgenv().SigmaFishConfig = c
-		if not Fish then return end
-		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
-		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
-		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
-		if Fish.setAutoCookSell then Fish.setAutoCookSell(c.AutoCookSell ~= false) end
-		if Fish.setAutoSpawn then Fish.setAutoSpawn(c.AutoSpawn ~= false) end
-		if Fish.setAntiAfk then Fish.setAntiAfk(c.AntiAfk ~= false) end
-		if Fish.setSellAt then Fish.setSellAt(c.SellAt) end
-		if Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(c.AutoKenbunshoku == true) end
-		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
-		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
-		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
-		if Fish.setAutoAffinity then Fish.setAutoAffinity(c.AutoAffinity == true) end
-		if Fish.setHideName then Fish.setHideName(c.HideName ~= false) end
-		if Fish.setAutoClaimSam then Fish.setAutoClaimSam(c.AutoClaimSam == true) end
-		if Fish.setAutoDropCompass then Fish.setAutoDropCompass(c.AutoDropCompass == true) end
-		if Fish.setAutoFindSam then Fish.setAutoFindSam(c.AutoFindSam == true) end
-		if Fish.setAutoSkill then Fish.setAutoSkill(c.AutoSkill == true) end
-		if Fish.setSkillKeys then Fish.setSkillKeys(c.SkillKeys) end
-		if Fish.setSkillHoldSec then Fish.setSkillHoldSec(c.SkillHoldSec) end
-		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
-		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
-		if Fish.setCacheUsePick then Fish.setCacheUsePick(c.CacheUsePick) end
-		if Fish.setCacheDropPick then Fish.setCacheDropPick(c.CacheDropPick) end
-		if Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(c.AutoCacheDrop == true) end
-		if Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(c.AutoUseConsumables ~= false) end
-		if Fish.applyConfig then Fish.applyConfig() end
+		if Fish and Fish.applyConfig then
+			pcall(function() Fish.applyConfig() end)
+		end
 		applyUiHideName()
 	end
 
 	local function loadConfig(silent)
-		if not configFile or not configFile.Load then
+		if not configFile then
 			if not silent then
 				notify(hub, "Config", "Config system unavailable", "triangle-alert")
 			end
 			return false
 		end
-		local ok, err = pcall(function()
-			configFile:Load()
-		end)
-		if not ok then
+
+		local snap = readConfigSnapshotFromFile()
+		if type(snap) ~= "table" and configFile.Load then
+			local ok, err = pcall(function()
+				configFile:Load()
+			end)
+			if not ok then
+				if not silent then
+					notify(hub, "Config", "Load failed: " .. tostring(err), "triangle-alert", 4)
+				end
+				return false
+			end
+			task.wait(0.55)
+			if configFile.Get then
+				local fromCustom = configFile:Get("SigmaFishConfig")
+				if type(fromCustom) == "table" then
+					snap = copyConfigTable(fromCustom)
+				end
+			end
+			if type(snap) ~= "table" and syncConfigFromUi then
+				syncConfigFromUi(false)
+				snap = copyConfigTable(getgenv().SigmaFishConfig or cfg)
+			end
+		end
+
+		if type(snap) ~= "table" then
 			if not silent then
-				notify(hub, "Config", "Load failed: " .. tostring(err), "triangle-alert", 4)
+				notify(hub, "Config", "No saved config found", "triangle-alert", 3)
 			end
 			return false
 		end
-		task.wait(0.55)
-		local merged = copyConfigTable(getgenv().SigmaFishConfig or cfg)
-		local snap = configFile.Get and configFile:Get("SigmaFishConfig")
-		if type(snap) == "table" then
-			for k, v in pairs(snap) do
-				if type(v) == "table" then
-					local nested = {}
-					for k2, v2 in pairs(v) do nested[k2] = v2 end
-					merged[k] = nested
-				else
-					merged[k] = v
-				end
+
+		local merged = normalizeSigmaConfig(snap)
+		if configFile.Get then
+			local theme = configFile:Get("Theme")
+			if theme and hub.SetTheme then
+				hub:SetTheme(theme)
+				merged.Theme = theme
+			end
+			local autoLoad = configFile:Get("AutoReloadConfig")
+			if autoLoad ~= nil then
+				merged.AutoReloadConfig = autoLoad == true
 			end
 		end
-		local theme = configFile.Get and configFile:Get("Theme")
-		if theme and hub.SetTheme then
-			hub:SetTheme(theme)
-			merged.Theme = theme
-		end
-		local autoLoad = configFile.Get and configFile:Get("AutoReloadConfig")
-		if autoLoad ~= nil then
-			merged.AutoReloadConfig = autoLoad == true
-		end
-		cfg = merged
-		getgenv().SigmaFishConfig = merged
-		if type(snap) == "table" then
-			if applyConfigToUi then applyConfigToUi(merged) end
-		elseif syncConfigFromUi then
-			syncConfigFromUi(false)
-			merged = getgenv().SigmaFishConfig or merged
-			cfg = merged
-		end
-		applyBackendFromConfig(merged)
+
+		reinforceLoadedConfig(merged)
+		task.delay(0.45, function()
+			reinforceLoadedConfig(getgenv().SigmaFishConfig or merged)
+		end)
+		task.delay(1.0, function()
+			reinforceLoadedConfig(getgenv().SigmaFishConfig or merged)
+		end)
+
 		if not silent then
 			notify(hub, "Config", "Config loaded", "folder-open", 3)
 		end
@@ -1089,9 +1138,9 @@ function SigmaUI.build(hub, Fish, opts)
 			if n then c.SellAt = n end
 		end
 		cfg = c
-		getgenv().SigmaFishConfig = c
-		if applyBackend then applyBackendFromConfig(c) end
-		return c
+		getgenv().SigmaFishConfig = normalizeSigmaConfig(c)
+		if applyBackend then applyBackendFromConfig(getgenv().SigmaFishConfig) end
+		return getgenv().SigmaFishConfig
 	end
 
 	task.spawn(function()
