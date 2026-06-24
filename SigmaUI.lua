@@ -438,7 +438,8 @@ function SigmaUI.build(hub, Fish, opts)
 		})
 
 		autoUseConsumablesToggle = FishTab:Toggle({
-			Title = "Auto Use Drinks (+)",
+			Title = "Auto Use Fruits/Drinks",
+			Desc = "Lemonade, Coconut, Prickly Pear, + drinks, etc.",
 			Value = cfg.AutoUseConsumables ~= false,
 			Default = true,
 			Flag = "Sigma_AutoUseConsumables",
@@ -446,7 +447,7 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoUseConsumables = v ~= false
 				if Fish and Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(v) end
-				notify(hub, "Auto Use Drinks", v and "ON" or "OFF", "cup-soda", 2)
+				notify(hub, "Auto Use Fruits/Drinks", v and "ON" or "OFF", "cup-soda", 2)
 			end,
 		})
 
