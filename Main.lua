@@ -245,6 +245,7 @@ SAM = {
 	DROP_WAIT = 0.3,
 	DROP_TIMEOUT = 10,
 	_actionAt = {},
+	_tripBusy = false,
 }
 
 COMPASS = {
@@ -721,10 +722,66 @@ function samCloseDialogue()
 	return false
 end
 
+function samGetReturnCF()
+	local hrp = getHRP()
+	return hrp and hrp.CFrame
+end
+
+function samRestoreCF(cf)
+	local hrp = getHRP()
+	if hrp and cf then
+		pcall(function() hrp.CFrame = cf end)
+		task.wait(0.12)
+		return true
+	end
+	return false
+end
+
+function samUnequipAllTools()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum:UnequipTools() end) end
+	task.wait(0.08)
+end
+
+function dropSelectedCacheInPlace()
+	if not CACHE.AUTO_DROP then return false end
+	local pick = cacheDropPick()
+	if #pick < 1 or not cacheDropPending(pick) then return false end
+	while cacheDropPending(pick) and isActive() do
+		if not cacheDropTypes(pick, 10) then break end
+		task.wait(CACHE.DROP_WAIT)
+	end
+	return true
+end
+
+function samWithReturnTrip(samModel, workFn)
+	if SAM._tripBusy then return false end
+	SAM._tripBusy = true
+	local savedCF = samGetReturnCF()
+	samUnequipAllTools()
+	if samModel then tpNear(samModel) end
+	local ok = true
+	if type(workFn) == "function" then
+		ok = workFn() ~= false
+	end
+	samRestoreCF(savedCF)
+	dropSelectedCacheInPlace()
+	if FISH.ON and findRod() then
+		equipBestRodNow()
+	end
+	SAM._tripBusy = false
+	return ok
+end
+
 function samClickNPC(model)
 	if not model then return false end
 	setMerchant(model)
-	task.wait(0.05)
+	local part = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart", true)
+	if part then
+		local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
+		if cd and fireclickdetector then pcall(fireclickdetector, cd) end
+	end
+	task.wait(0.12)
 	return true
 end
 
@@ -746,14 +803,16 @@ function samClaimCompass()
 		return false
 	end
 	if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
-	samClickNPC(m)
-	task.wait(SAM.CLAIM_WAIT)
 	local canClaim = math.floor(tonumber(stats.Compass) or 0)
 	local amount = math.min(canClaim, 10, remaining)
 	if amount < 1 then return false end
-	local ok = exec("Sam", { "ClaimAmount", m, amount })
-	task.defer(samCloseDialogue)
-	return ok ~= false
+	return samWithReturnTrip(m, function()
+		samClickNPC(m)
+		task.wait(SAM.CLAIM_WAIT)
+		local ok = exec("Sam", { "ClaimAmount", m, amount })
+		task.defer(samCloseDialogue)
+		return ok ~= false
+	end)
 end
 
 function samTryAccept(name, info)
@@ -769,16 +828,19 @@ function samTryAccept(name, info)
 		if not samActionReady("accept", 3) then return false end
 		local m = samFindNPC()
 		if not m then return false end
-		samClickNPC(m)
-		exec("QuestEvents", { "Accept", info.quest })
-		task.defer(samCloseDialogue)
-		return true
+		return samWithReturnTrip(m, function()
+			samClickNPC(m)
+			exec("QuestEvents", { "Accept", info.quest })
+			task.defer(samCloseDialogue)
+			return true
+		end)
 	end
 	return false
 end
 
 function stepSam()
 	if not SAM.ON then return false end
+	if SAM._tripBusy then return true end
 	if samClaimCompass() then return true end
 	local q = getQuests()
 	if not q then return false end
@@ -789,9 +851,12 @@ function stepSam()
 			if not samActionReady("questclaim", 2.5) then return true end
 			local m = samFindNPC()
 			if m then
-				samClickNPC(m)
-				exec("QuestEvents", { "Claim" })
-				task.defer(samCloseDialogue)
+				samWithReturnTrip(m, function()
+					samClickNPC(m)
+					exec("QuestEvents", { "Claim" })
+					task.defer(samCloseDialogue)
+					return true
+				end)
 			end
 		else
 			stepFarmQuest("Sam", info, "sam")
@@ -1877,6 +1942,7 @@ function cacheDropPending(types)
 end
 
 function shouldDeferRodEquip()
+	if SAM._tripBusy then return true end
 	if CACHE._dropBusy then return true end
 	if CACHE.AUTO_DROP and #cacheDropPick() > 0 and cacheDropPending(cacheDropPick()) then
 		return true
@@ -3520,6 +3586,12 @@ function dropGrappleTools()
 	scan(player:FindFirstChild("Backpack"))
 end
 
+function destroySeat(inst)
+	if inst and inst:IsA("Seat") then
+		pcall(function() inst:Destroy() end)
+	end
+end
+
 function setupGrappleCleaner()
 	local old = getgenv().__SIGMA_GrappleConns
 	if old then
@@ -3532,6 +3604,10 @@ function setupGrappleCleaner()
 		for _, c in ipairs(container:GetChildren()) do onTool(c) end
 		table.insert(conns, container.ChildAdded:Connect(onTool))
 	end
+	for _, d in ipairs(workspace:GetDescendants()) do destroySeat(d) end
+	table.insert(conns, workspace.DescendantAdded:Connect(function(d)
+		task.defer(function() destroySeat(d) end)
+	end))
 	watch(player:FindFirstChild("Backpack"))
 	watch(player.Character)
 	table.insert(conns, player.CharacterAdded:Connect(function(char)
