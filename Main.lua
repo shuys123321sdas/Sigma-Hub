@@ -95,6 +95,7 @@ STATE = {
 	hakiMaxNotified = false,
 	hideNameActive = false,
 	hideNameGuiAt = 0,
+	attackMob = nil,
 }
 
 QUEST = {
@@ -239,6 +240,9 @@ BEGGAR = {
 
 COMBAT = {
 	ORDER = { "Sword", "Melee" },
+	M1_LOOP_WAIT = 0.15,
+	M1_CLICK_GAP = 0.03,
+	USE_VU_FALLBACK = false,
 	CAT_ALIASES = {
 		Sword = { "Sword", "Swords" },
 		Melee = { "Melee" },
@@ -1335,40 +1339,90 @@ function tpNearMob(mob, force)
 	return true
 end
 
-function m1AttackOnce()
+function skillContext(mob)
+	local hrp = getHRP()
+	if not hrp then return nil end
+	local cam = workspace.CurrentCamera
+	local camCf = (cam and cam.CFrame) or hrp.CFrame
+	local cf = hrp.CFrame
+	local target = nil
+	if mob and mob.Parent then
+		target = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return {
+		RayCFrame = cf,
+		CameraCFrame = camCf,
+		MouseCFrame = cf,
+		RayCFrameIA = cf,
+	}, target
+end
+
+function combatM1Action()
+	return UNC.mobile and "Touch" or "MouseLeftButton"
+end
+
+function fireSkillAction(action, holdTime, mob)
+	local ctx, target = skillContext(mob)
+	if not ctx then return false end
+	local ok1 = exec("SkillCaller", { action, ctx, target, "Start" })
+	task.wait(holdTime or COMBAT.M1_CLICK_GAP)
+	local ok2 = exec("SkillCaller", { action, ctx, target, "End" })
+	return ok1 or ok2
+end
+
+function vuM1Click()
 	if not VirtualUser then return false end
 	local cam = workspace.CurrentCamera
 	if not cam then return false end
-	pcall(function() VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame) end)
-	task.wait(0.03)
-	pcall(function() VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame) end)
+	pcall(function()
+		VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
+	end)
+	task.wait(COMBAT.M1_CLICK_GAP)
+	pcall(function()
+		VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
+	end)
 	return true
 end
 
-function mobAttackOnce(tool)
-	local char = player.Character
-	if tool and char and tool.Parent == char then
-		pcall(function() tool:Activate() end)
+function combatAttackOnce(mob)
+	mob = mob or STATE.attackMob
+	ensureCombatReady()
+	if fireSkillAction(combatM1Action(), COMBAT.M1_CLICK_GAP, mob) then
+		return true
 	end
-	return m1AttackOnce()
+	local char = player.Character
+	if char then
+		for _, t in ipairs(char:GetChildren()) do
+			if t:IsA("Tool") and isCombatTool(t) then
+				if pcall(function() t:Activate() end) then return true end
+				break
+			end
+		end
+	end
+	if COMBAT.USE_VU_FALLBACK then
+		return vuM1Click()
+	end
+	return false
 end
 
-function startM1Loop(aliveFn)
+function m1AttackOnce()
+	return combatAttackOnce()
+end
+
+function mobAttackOnce()
+	return combatAttackOnce()
+end
+
+function startM1Loop(aliveFn, mob)
+	if mob then STATE.attackMob = mob end
 	local run = STATE.m1RunId + 1
 	STATE.m1RunId = run
 	task.spawn(function()
-		pcall(function()
-			if VirtualUser and VirtualUser.CaptureController then
-				VirtualUser:CaptureController()
-			end
-		end)
 		while isActive() and STATE.m1RunId == run do
 			if not aliveFn or aliveFn() then
-				local tool = ensureCombatReady()
-				if tool then mobAttackOnce(tool) end
+				combatAttackOnce(STATE.attackMob)
 			end
-			task.wait(QUEST.ATTACK_CD)
-			if not isActive() or STATE.m1RunId ~= run then break end
+			task.wait(COMBAT.M1_LOOP_WAIT)
 		end
 	end)
 	return run
@@ -1376,6 +1430,7 @@ end
 
 function stopM1Loop()
 	STATE.m1RunId += 1
+	STATE.attackMob = nil
 end
 
 function m1Attack()
@@ -1433,7 +1488,7 @@ function attackBurstOnMob(mob, mode)
 	local aliveFn = function()
 		return questMobKillEnabled() and questModeOk(mode)
 	end
-	startM1Loop(aliveFn)
+	startM1Loop(aliveFn, mob)
 	ensureCombatReady()
 	local ok = attackLoopOnMob(mob, mode)
 	stopM1Loop()
@@ -2218,7 +2273,7 @@ function useToolClicks(tool, hum, clicks, delay)
 	local n = clicks or 1
 	for i = 1, n do
 		if not isActive() or not tool.Parent then break end
-		if not pcall(function() tool:Activate() end) then m1AttackOnce() end
+		if not pcall(function() tool:Activate() end) then combatAttackOnce() end
 		if delay and delay > 0 then
 			task.wait(delay)
 		elseif i < n then
@@ -3055,19 +3110,15 @@ function pressHakiSkill(skillName)
 		hakiLog("press:" .. skillName, string.format("pressed %s via VIM key=%s", skillName, tostring(key)), 2)
 		return true
 	end
-	local ctx = {}
-	local hrp = getHRP()
-	if hrp then
-		local cf = hrp.CFrame
-		ctx = { RayCFrame = cf, CameraCFrame = cf, MouseCFrame = cf, RayCFrameIA = cf }
-	end
+	local ctx, target = skillContext()
+	if not ctx then return false end
 	local ok = false
 	if key then
-		ok = exec("SkillCaller", { key, ctx, nil, "Start" })
-			or exec("SkillCaller", { key, ctx, nil, "End" })
+		ok = exec("SkillCaller", { key, ctx, target, "Start" })
+			or exec("SkillCaller", { key, ctx, target, "End" })
 	end
 	if not ok then
-		ok = exec("SkillCaller", { skillName, ctx, nil, "Start" })
+		ok = exec("SkillCaller", { skillName, ctx, target, "Start" })
 	end
 	hakiLog("press:" .. skillName, string.format(
 		"press %s key=%s vim=%s skillCaller=%s vimAvail=%s",
