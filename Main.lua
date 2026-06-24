@@ -41,6 +41,11 @@ HUB = {
 	ANTI_AFK_JUMP = 180,
 	LOOP_DELAY = 0.35,
 }
+
+GRAPPLE = {
+	TOKENS = { "grapple" },
+	DROP_INTERVAL = 1.5,
+}
 FISH = {
 	ON = false, AUTO_SELL = true,
 	SELL_AT = 40, LOOP_DELAY = 0.25,
@@ -68,7 +73,7 @@ STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
-	m1RunId = 0, antiAfkRunId = 0,
+	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0,
 }
 
 QUEST = {
@@ -97,14 +102,22 @@ QUEST = {
 		["Gemologist"] = { quest = "Gem Hunter", kind = "reach", target = "Chests.Gemologist" },
 	},
 	COLLECT_BLOCK = { "grapple", "package", "melee", "essence", "compass" },
-	COLLECT_WAIT = 0.03,
-	COLLECT_BATCH = 8,
-	COLLECT_TP_UP = 2,
+	COLLECT_WAIT = 0.12,
+	COLLECT_TP_UP = 4,
 	CARRY_SWEEP_WAIT = 0.35,
 	ATTACK_RANGE = 5,
 	ATTACK_CD = 0.15,
-	ATTACK_BURST = 3.5,
 	TARGET_SCAN = 800,
+	TP_OFFSET = 6,
+	_deliverAt = {},
+}
+
+BEGGAR = {
+	AUTO_GOLDEN = true,
+	KEEP_GOLDEN = 1,
+	GOLDEN_CLICKS = 8,
+	AUTO_PEAR = true,
+	PEAR_CLICKS = 8,
 }
 
 COMBAT = {
@@ -808,35 +821,55 @@ function m1Attack()
 	m1AttackOnce()
 end
 
-function attackBurstOnMob(mob)
+function setQuestMobKill(on)
+	getgenv().__SIGMA_QUEST_MOB_KILL = on == true
+end
+
+function questMobKillEnabled()
+	return getgenv().__SIGMA_QUEST_MOB_KILL == true
+end
+
+function attackLoopOnMob(mob)
+	if not questMobKillEnabled() then return false end
 	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return true end
 	ensureCombatReady()
 	tpNearMob(mob)
-	startM1Loop()
-	local t0, lastHp, stall = tick(), hum.Health, 0
-	while isActive() and tick() - t0 < QUEST.ATTACK_BURST do
+	local lastHp, stallAt = hum.Health, os.clock()
+	while isActive() and questMobKillEnabled() do
 		hum = mob:FindFirstChildOfClass("Humanoid")
-		if not hum or hum.Health <= 0 then break end
+		if not hum or hum.Health <= 0 then return true end
 		tpNearMob(mob)
-		task.wait(0.1)
-		if hum.Health <= 0 then break end
-		if hum.Health >= lastHp then
-			stall += 0.1
-			if stall >= 2 then tpNearMob(mob) stall = 0 end
-		else
-			lastHp, stall = hum.Health, 0
+		task.wait(QUEST.ATTACK_CD)
+		hum = mob:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health <= 0 then return true end
+		if hum.Health < lastHp then
+			lastHp, stallAt = hum.Health, os.clock()
+		elseif os.clock() - stallAt >= 4 then
+			tpNearMob(mob)
+			stallAt = os.clock()
 		end
 	end
+	return false
+end
+
+function attackBurstOnMob(mob)
+	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return true end
+	setQuestMobKill(true)
+	startM1Loop()
+	ensureCombatReady()
+	tpNearMob(mob)
+	local ok = attackLoopOnMob(mob)
 	stopM1Loop()
+	setQuestMobKill(false)
 	hum = mob:FindFirstChildOfClass("Humanoid")
-	return not hum or hum.Health <= 0
+	return ok or not hum or hum.Health <= 0
 end
 
 function stepFarmQuest(npc, info)
 	local groups = getMobGroups(info)
 	if #groups < 1 then return false end
-	ensureCombatReady()
 	local mob = nearestQuestMob(groups)
 	if not mob then return false end
 	return attackBurstOnMob(mob)
@@ -1541,56 +1574,146 @@ function fireCollectAt(item)
 	local hrp = getHRP()
 	if hrp and pos then
 		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, QUEST.COLLECT_TP_UP, 0)) end)
+		task.wait(QUEST.COLLECT_WAIT)
 	end
-	for _, cd in ipairs(cds) do safeFireClick(cd) end
-	for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
+	for _ = 1, 2 do
+		for _, cd in ipairs(cds) do safeFireClick(cd) end
+		for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
+		task.wait(0.05)
+	end
 	return true
 end
 
-function nearestCollectibles(info, limit)
-	local hrp = getHRP()
-	if not hrp then return {} end
-	local arr = {}
+function countItem(itemName)
+	local n = 0
+	local char = player.Character
+	if char then
+		for _, c in ipairs(char:GetChildren()) do
+			if c.Name == itemName then n += 1 end
+		end
+	end
+	local bp = player:FindFirstChild("Backpack")
+	if bp then
+		for _, c in ipairs(bp:GetChildren()) do
+			if c.Name == itemName then n += 1 end
+		end
+	end
+	return n
+end
+
+function useToolClicks(tool, hum, clicks, delay)
+	if not tool or not hum then return end
+	pcall(function() hum:EquipTool(tool) end)
+	local n = clicks or 1
+	for i = 1, n do
+		if not isActive() or not tool.Parent then break end
+		if not pcall(function() tool:Activate() end) then m1AttackOnce() end
+		if delay and delay > 0 then
+			task.wait(delay)
+		elseif i < n then
+			task.wait(0.05)
+		end
+	end
+end
+
+function isGoldenAppleName(name)
+	local low = string.lower(tostring(name or ""))
+	return string.find(low, "golden apple", 1, true) ~= nil
+end
+
+function isPearName(name)
+	local low = string.lower(tostring(name or ""))
+	return low == "pear" or string.find(low, " pear", 1, true) or string.find(low, "pear ", 1, true)
+end
+
+function collectToolsByName(matchFn)
+	local out = {}
+	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if where then
+			for _, c in ipairs(where:GetChildren()) do
+				if c:IsA("Tool") and matchFn(c.Name) then out[#out + 1] = c end
+			end
+		end
+	end
+	return out
+end
+
+function useGoldenApplesForOldBeggar()
+	if not BEGGAR.AUTO_GOLDEN then return 0 end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return 0 end
+	local tools = collectToolsByName(isGoldenAppleName)
+	local canUse = math.max(0, #tools - BEGGAR.KEEP_GOLDEN)
+	local used = 0
+	for _, tool in ipairs(tools) do
+		if used >= canUse or not isActive() then break end
+		useToolClicks(tool, hum, BEGGAR.GOLDEN_CLICKS)
+		used += 1
+	end
+	return used
+end
+
+function usePearsForOldBeggar()
+	if not BEGGAR.AUTO_PEAR then return 0 end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return 0 end
+	local tools = collectToolsByName(isPearName)
+	local used = 0
+	for _, tool in ipairs(tools) do
+		if not isActive() then break end
+		useToolClicks(tool, hum, BEGGAR.PEAR_CLICKS)
+		used += 1
+	end
+	return used
+end
+
+function deliverCollectItems(npc, info)
+	local model = findNPC(npc)
+	if not model then return false end
+	local any = false
+	for _, it in ipairs(info.deliverItems or {}) do
+		if countItem(it) > 0 then
+			questExec(model, "Deliver", it)
+			any = true
+		end
+	end
+	return any
+end
+
+function stepCollectQuest(npc, info)
+	if questDone() then
+		deliverCollectItems(npc, info)
+		return false
+	end
+	local total = 0
 	for _, fp in ipairs(info.collectFolders or {}) do
 		local folder = resolvePath(fp)
 		if folder then
 			for _, item in ipairs(folder:GetChildren()) do
-				if not collectNameBlocked(item.Name) then
-					local pos = getPos(item)
-					if pos then
-						arr[#arr + 1] = { item = item, d = (hrp.Position - pos).Magnitude }
+				if not isActive() or questDone() then return total > 0 end
+				if not collectNameBlocked(item.Name) and fireCollectAt(item) then
+					total += 1
+					if npc == "Old Beggar" then
+						useGoldenApplesForOldBeggar()
+						usePearsForOldBeggar()
 					end
+					task.wait(0.02)
 				end
 			end
 		end
 	end
-	table.sort(arr, function(a, b) return a.d < b.d end)
-	local out = {}
-	limit = limit or QUEST.COLLECT_BATCH
-	for i = 1, math.min(limit, #arr) do out[i] = arr[i].item end
-	return out
+	deliverCollectItems(npc, info)
+	return total > 0
 end
 
-function stepCollectQuest(npc, info)
-	if questDone() then return false end
-	local batch = nearestCollectibles(info, QUEST.COLLECT_BATCH)
-	if #batch < 1 then return false end
-	local n = 0
-	for _, item in ipairs(batch) do
-		if not isActive() or questDone() then break end
-		if fireCollectAt(item) then n += 1 end
-	end
-	return n > 0
-end
-
-function stepReachQuest(info)
+function stepReachQuest(npc, info)
 	local pos
 	if type(info.pos) == "table" then
 		pos = Vector3.new(info.pos[1], info.pos[2], info.pos[3])
 	else
 		local target = resolvePath(info.target)
 		local p = target and getPos(target)
-		if p then pos = p + Vector3.new(0, 4, 0) end
+		if p then pos = p + Vector3.new(0, QUEST.TP_OFFSET, 0) end
 	end
 	if not pos then return false end
 	local hrp = getHRP()
@@ -1598,20 +1721,29 @@ function stepReachQuest(info)
 	return true
 end
 
-function stepReachAllQuest(info)
+function stepReachAllQuest(npc, info)
 	local folder = resolvePath(info.folder)
 	if not folder then return false end
-	local hrp = getHRP()
-	if not hrp then return false end
 	local parts = {}
-	for _, p in ipairs(folder:GetDescendants()) do
-		if p:IsA("BasePart") then parts[#parts + 1] = p end
+	for _, c in ipairs(folder:GetDescendants()) do
+		if c:IsA("BasePart") then parts[#parts + 1] = c end
 	end
-	local idx = (STATE.reachIdx or 0) % math.max(#parts, 1)
-	STATE.reachIdx = idx + 1
-	local p = parts[idx + 1]
-	if p then pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, QUEST.COLLECT_TP_UP, 0)) end) end
+	for _, p in ipairs(parts) do
+		if not isActive() or questDone() then break end
+		local hrp = getHRP()
+		if hrp then
+			pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, QUEST.TP_OFFSET, 0)) end)
+		end
+		task.wait(0.35)
+	end
 	return #parts > 0
+end
+
+function stepDeliverQuest(npc, info)
+	local now = os.clock()
+	if now - (QUEST._deliverAt[npc] or 0) < 2 then return false end
+	QUEST._deliverAt[npc] = now
+	return deliverQuestItems(npc, info)
 end
 
 function activeQuestInDB(q)
@@ -1643,10 +1775,9 @@ function stepActiveQuest(npc, info)
 	end
 	local kind = info.kind or "mob"
 	if kind == "deliver" then
-		return deliverQuestItems(npc, info)
+		return stepDeliverQuest(npc, info)
 	elseif kind == "collect" then
-		if not q.Completed then stepCollectQuest(npc, info) end
-		return deliverQuestItems(npc, info)
+		return stepCollectQuest(npc, info)
 	elseif kind == "talk" then
 		return stepTalkQuest(npc, info)
 	elseif kind == "carry" then
@@ -1656,9 +1787,9 @@ function stepActiveQuest(npc, info)
 		if model then questExec(model, "Accept", info.quest) end
 		return true
 	elseif kind == "reach" then
-		return stepReachQuest(info)
+		return stepReachQuest(npc, info)
 	elseif kind == "reachAll" then
-		return stepReachAllQuest(info)
+		return stepReachAllQuest(npc, info)
 	elseif questInfoNeedsKill(info) then
 		return stepFarmQuest(npc, info)
 	end
@@ -1949,10 +2080,61 @@ function syncCfg()
 	end
 end
 
+function isGrappleTool(inst)
+	if not inst or not inst:IsA("Tool") then return false end
+	local n = string.lower(inst.Name)
+	for _, t in ipairs(GRAPPLE.TOKENS) do
+		if string.find(n, t, 1, true) then return true end
+	end
+	return false
+end
+
+function deleteGrappleTool(inst)
+	if not isGrappleTool(inst) then return end
+	task.defer(function()
+		if inst and inst.Parent then pcall(function() inst:Destroy() end) end
+	end)
+end
+
+function dropGrappleTools()
+	local now = os.clock()
+	if STATE.lastGrappleDrop and now - STATE.lastGrappleDrop < GRAPPLE.DROP_INTERVAL then return end
+	STATE.lastGrappleDrop = now
+	local function scan(parent)
+		if not parent then return end
+		for _, c in ipairs(parent:GetChildren()) do deleteGrappleTool(c) end
+	end
+	scan(player.Character)
+	scan(player:FindFirstChild("Backpack"))
+end
+
+function setupGrappleCleaner()
+	local old = getgenv().__SIGMA_GrappleConns
+	if old then
+		for _, cn in ipairs(old) do pcall(function() cn:Disconnect() end) end
+	end
+	local conns = {}
+	local function onTool(inst) deleteGrappleTool(inst) end
+	local function watch(container)
+		if not container then return end
+		for _, c in ipairs(container:GetChildren()) do onTool(c) end
+		table.insert(conns, container.ChildAdded:Connect(onTool))
+	end
+	watch(player:FindFirstChild("Backpack"))
+	watch(player.Character)
+	table.insert(conns, player.CharacterAdded:Connect(function(char)
+		task.wait(0.3)
+		watch(char)
+		watch(player:FindFirstChild("Backpack"))
+	end))
+	getgenv().__SIGMA_GrappleConns = conns
+end
+
 function serviceTick()
 	if HUB.AUTO_SPAWN then
 		if ensureSpawn() then return end
 	end
+	dropGrappleTools()
 end
 
 function featureTick()
@@ -1984,10 +2166,13 @@ function startHubLoop()
 	getgenv().__SIGMA_FISH_RUNNING = true
 	getgenv().__SIGMA_FISH_RUN_ID = run
 	setupAntiAfk()
+	setupGrappleCleaner()
 	task.spawn(function()
 		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
 			pcall(hubTick)
-			task.wait(HUB.LOOP_DELAY)
+			local waitT = HUB.LOOP_DELAY
+			if questWorkActive() then waitT = 0.05 end
+			task.wait(waitT)
 		end
 	end)
 end
