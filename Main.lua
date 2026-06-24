@@ -19,6 +19,8 @@ TeleportService = game:GetService("TeleportService")
 RunService = game:GetService("RunService")
 player = Players.LocalPlayer
 
+function sigmaLog(...) end
+
 UNC = {
 	mobile = false,
 	vim = VirtualInputManager ~= nil,
@@ -98,6 +100,7 @@ STATE = {
 	attackMob = nil,
 	rejoinPending = false,
 	whitelistKickAt = 0,
+	kickPending = false,
 }
 
 QUEST = {
@@ -245,9 +248,9 @@ SKILL = {
 	ON = false,
 	ALL_KEYS = { "Z", "X", "C", "V", "B", "N", "F", "G", "H", "J", "K", "L" },
 	HOLD_SEC = 0.5,
-	LOOP_WAIT = 0.15,
-	KEY_GAP = 0.05,
-	_keyDown = nil,
+	LOOP_WAIT = 0,
+	KEY_GAP = 0,
+	_keysDown = {},
 }
 
 REJOIN = {
@@ -534,7 +537,7 @@ function updateHakiMaxState()
 		if stop and stop > 0 then
 			notifyHub("Haki MAX", string.format("Haki Lv %d >= stop %d", lv, stop), "zap", 5)
 		else
-			notifyHub("Haki MAX", string.format("Haki Lv %d — đã max", lv), "zap", 5)
+			notifyHub("Haki MAX", string.format("Haki Lv %d — maxed", lv), "zap", 5)
 		end
 	elseif not maxed then
 		STATE.hakiMaxNotified = false
@@ -634,6 +637,9 @@ function stepHideName()
 		STATE.hideNameGuiAt = now
 		patchGuiNames(true)
 	end
+	if type(getgenv().SigmaApplyUiHideName) == "function" then
+		pcall(getgenv().SigmaApplyUiHideName)
+	end
 end
 
 function samIsManagedActive(name)
@@ -729,8 +735,6 @@ function samClaimCompass()
 	local amount = math.min(canClaim, 10, remaining)
 	if amount < 1 then return false end
 	local ok = exec("Sam", { "ClaimAmount", merchant, amount })
-	print(string.format("[Sigma Sam] ClaimAmount x%d @ %s (Compass=%s/%s pity=%d ok=%s)",
-		amount, tostring(m.Name), tostring(stats.Compass), tostring(stats.CompassStorage or 1), pity, tostring(ok)))
 	task.defer(samCloseDialogue)
 	return ok ~= false
 end
@@ -751,7 +755,6 @@ function samTryAccept(name, info)
 		samClickNPC(m)
 		exec("QuestEvents", { "Accept", info.quest })
 		task.defer(samCloseDialogue)
-		print(string.format("[Sigma Sam] ACCEPTED '%s' (kill thugs before claim)", info.quest))
 		return true
 	end
 	return false
@@ -772,7 +775,6 @@ function stepSam()
 				samClickNPC(m)
 				exec("QuestEvents", { "Claim" })
 				task.defer(samCloseDialogue)
-				print("[Sigma Sam] CLAIMED 'Help Sam'")
 			end
 		else
 			stepFarmQuest("Sam", info, "sam")
@@ -830,7 +832,6 @@ function stepCompassDrop()
 			task.wait(0.06)
 		end
 	end
-	print(string.format("[Sigma Compass] drop %d->%d", startCount, samCountCompassTool()))
 	return samCountCompassTool() < startCount
 end
 
@@ -924,7 +925,6 @@ function compassBuildSpawnerDB()
 		end
 	end
 	COMPASS._spawnerDB = all
-	print(string.format("[Sigma Compass] DB: %d spawner", #all))
 	return all
 end
 
@@ -1033,7 +1033,6 @@ function compassHuntOnce(startC)
 		visited[row.entry.sp] = true
 		compassTpStandOn(row.entry.sp, row.entry.tree)
 		if compassWaitHarvest(row.entry.sp, startC) then
-			print(string.format("[Sigma Compass] picked @ %s", row.entry.tree))
 			return true
 		end
 	end
@@ -3092,13 +3091,6 @@ function hakiDebugOn()
 end
 
 function hakiLog(tag, msg, interval)
-	if not hakiDebugOn() then return end
-	interval = interval or HAKI.DEBUG_INTERVAL
-	local now = os.clock()
-	local key = tostring(tag or "haki")
-	if now - (HAKI._logAt[key] or 0) < interval then return end
-	HAKI._logAt[key] = now
-	print("[Sigma Haki]", msg)
 end
 
 function hakiDiagSnapshot()
@@ -3448,16 +3440,24 @@ function pressKeyAction(action, hold)
 end
 
 function skillReleaseKey()
-	if not SKILL._keyDown or not UNC.vim then
+	skillReleaseAllKeys()
+end
+
+function skillReleaseAllKeys()
+	if not UNC.vim then
+		SKILL._keysDown = {}
 		SKILL._keyDown = nil
 		return
 	end
-	local kc = actionToKeyCode(SKILL._keyDown)
-	if kc then
-		pcall(function()
-			VirtualInputManager:SendKeyEvent(false, kc, false, game)
-		end)
+	for key in pairs(SKILL._keysDown) do
+		local kc = actionToKeyCode(key)
+		if kc then
+			pcall(function()
+				VirtualInputManager:SendKeyEvent(false, kc, false, game)
+			end)
+		end
 	end
+	SKILL._keysDown = {}
 	SKILL._keyDown = nil
 end
 
@@ -3486,73 +3486,89 @@ function skillContext(mob)
 	}, target
 end
 
-function skillActiveKeys()
-	local cfg = getgenv().SigmaFishConfig or {}
-	local out = {}
-	local picked = cfg.SkillKeys
+function normalizeSkillKeys(picked)
+	local out, seen = {}, {}
 	if type(picked) ~= "table" then return out end
-	if picked[1] then
-		for _, k in ipairs(picked) do
-			local key = string.upper(tostring(k))
-			if #key == 1 then out[#out + 1] = key end
+	local function add(raw)
+		local k = string.upper(tostring(raw or ""))
+		k = string.gsub(k, "^%s+", "")
+		k = string.gsub(k, "%s+$", "")
+		if #k == 1 and not seen[k] then
+			seen[k] = true
+			out[#out + 1] = k
 		end
-	else
-		for _, key in ipairs(SKILL.ALL_KEYS) do
-			if picked[key] == true then out[#out + 1] = key end
+	end
+	for _, v in ipairs(picked) do
+		if type(v) == "string" or type(v) == "number" then add(v) end
+	end
+	for k, v in pairs(picked) do
+		if type(k) == "string" then
+			if v == true then add(k)
+			elseif type(v) == "string" then add(v) end
 		end
 	end
 	return out
 end
 
-function pressSkillKey(key)
-	if not UNC.vim then return false end
-	local kc = actionToKeyCode(key)
-	if not kc then return false end
-	skillReleaseKey()
+function skillActiveKeys()
+	local cfg = getgenv().SigmaFishConfig or {}
+	return normalizeSkillKeys(cfg.SkillKeys)
+end
+
+function pressSkillKeysBatch(keys)
+	if not UNC.vim or type(keys) ~= "table" or #keys < 1 then return false end
+	skillReleaseAllKeys()
 	local hold = skillHoldSec()
-	local ok = pcall(function()
-		VirtualInputManager:SendKeyEvent(true, kc, false, game)
-		SKILL._keyDown = key
-		task.wait(hold)
-	end)
-	skillReleaseKey()
-	return ok
+	local pressed = 0
+	for _, key in ipairs(keys) do
+		if not SKILL.ON or not isActive() then break end
+		local kc = actionToKeyCode(key)
+		if kc then
+			pcall(function()
+				VirtualInputManager:SendKeyEvent(true, kc, false, game)
+			end)
+			SKILL._keysDown[key] = true
+			pressed += 1
+		end
+	end
+	if pressed < 1 then return false end
+	pcall(function() task.wait(hold) end)
+	skillReleaseAllKeys()
+	return true
 end
 
 function stepAutoSkillOnce()
-	local keys = skillActiveKeys()
-	if #keys < 1 then return end
-	local hold = skillHoldSec()
-	for _, key in ipairs(keys) do
-		if not SKILL.ON or not isActive() then break end
-		pressSkillKey(key)
-		if hold > 0 then
-			task.wait(SKILL.KEY_GAP)
-		end
-	end
+	pressSkillKeysBatch(skillActiveKeys())
 end
 
 function stopSkillLoop()
 	getgenv().__SIGMA_SKILL_LOOP = false
-	skillReleaseKey()
+	skillReleaseAllKeys()
 end
 
 function refreshSkillLoop()
 	getgenv().__SIGMA_SKILL_LOOP = false
-	if not (SKILL.ON and #skillActiveKeys() > 0 and isActive()) then return end
+	if not (SKILL.ON and isActive()) then return end
+	if #skillActiveKeys() < 1 then return end
 	local runId = (getgenv().__SIGMA_SKILL_RUN or 0) + 1
 	getgenv().__SIGMA_SKILL_RUN = runId
 	getgenv().__SIGMA_SKILL_LOOP = true
 	task.spawn(function()
 		while getgenv().__SIGMA_SKILL_LOOP and getgenv().__SIGMA_SKILL_RUN == runId
 			and SKILL.ON and isActive() do
+			local keys = skillActiveKeys()
+			if #keys < 1 then break end
 			stepAutoSkillOnce()
-			task.wait(SKILL.LOOP_WAIT)
 		end
 		if getgenv().__SIGMA_SKILL_RUN == runId then
 			getgenv().__SIGMA_SKILL_LOOP = false
 		end
+		skillReleaseAllKeys()
 	end)
+end
+
+function pressSkillKey(key)
+	return pressSkillKeysBatch({ key })
 end
 
 function pressHakiSkill(skillName)
@@ -4170,7 +4186,6 @@ function hakiTryFarmReset()
 	if target then
 		hakiSetupAnchor(target)
 		hakiBringOnly()
-		print(string.format("[Sigma Haki] fast:reset -> re-tp anchor @ %s (bar stuck %ds)", target.Name, HAKI.DRAIN_RESET_SEC))
 		return true
 	end
 	return false
@@ -4428,10 +4443,6 @@ function stepFastHaki()
 		return hakiTryFarmReset()
 	end
 	if ratio >= HAKI.FULL_RATIO and hakiFullStuck(ratio, amount, now) then
-		print(string.format(
-			"[Sigma Haki] fast:stuck-full bar %d%% (%d/%d) unchanged %ds -> reset",
-			pct, amount or 0, cap or 0, HAKI.STUCK_FULL_SEC
-		))
 		return hakiTryFarmReset()
 	end
 	if not ((STATE.hakiFastRunning or STATE.hakiWasFull) and ratio < HAKI.FULL_RATIO) then
@@ -4678,12 +4689,6 @@ function stepRayleigh()
 end
 
 function affinityLog(msg, interval)
-	interval = interval or 4
-	local now = os.clock()
-	local key = tostring(msg)
-	if now - (AFFINITY._logAt[key] or 0) < interval then return end
-	AFFINITY._logAt[key] = now
-	print("[Sigma Affinity]", msg)
 end
 
 function affinityTargetsFromCfg(cfg)
@@ -5025,15 +5030,22 @@ function stepHakiFeatures()
 		stepFastHaki()
 	end)
 	if not ok then
-		warn("[Sigma Haki] ERROR:", err)
-		print(debug.traceback(tostring(err), 2))
+		sigmaLog("[Sigma Haki] ERROR:", err)
 	end
+end
+
+function sigmaKickSelf()
+	if STATE.kickPending then return false end
+	STATE.kickPending = true
+	pcall(function()
+		player:Kick("Non-whitelisted player in server")
+	end)
+	return true
 end
 
 function sigmaRejoinServer(reason)
 	if STATE.rejoinPending then return false end
 	STATE.rejoinPending = true
-	print(string.format("[Sigma Rejoin] %s -> TeleportService:Teleport(%s)", tostring(reason or "manual"), tostring(game.PlaceId)))
 	pcall(function() TeleportService:Teleport(game.PlaceId) end)
 	return true
 end
@@ -5096,14 +5108,10 @@ function tryWhitelistKick(intruder, source)
 	local now = os.clock()
 	if now - (STATE.whitelistKickAt or 0) < REJOIN.KICK_COOLDOWN then return false end
 	STATE.whitelistKickAt = now
-	print(string.format(
-		"[Sigma Rejoin] whitelist: %s joined (not in list) [%s] -> rejoin",
-		intruder.Name, tostring(source or "check")
-	))
-	return sigmaRejoinServer("whitelist:" .. intruder.Name)
+	return sigmaKickSelf()
 end
 
-function stepWhitelistRejoin()
+function stepWhitelistKick()
 	if not REJOIN.ON then return false end
 	local now = os.clock()
 	if now - (REJOIN._lastCheck or 0) < REJOIN.CHECK_INTERVAL then return false end
@@ -5159,7 +5167,7 @@ end
 function hubTick()
 	syncCfg()
 	stepHideName()
-	if REJOIN.ON then stepWhitelistRejoin() end
+	if REJOIN.ON then stepWhitelistKick() end
 	if not isActive() then return end
 	serviceTick()
 	if spawnOpen() then return end
@@ -5304,6 +5312,9 @@ function SigmaFish.setHideName(on)
 		restoreHideName()
 		STATE.hideNameActive = false
 	end
+	if type(getgenv().SigmaApplyUiHideName) == "function" then
+		pcall(getgenv().SigmaApplyUiHideName)
+	end
 	ensureLoopRunning()
 end
 
@@ -5390,10 +5401,7 @@ function SigmaFish.setAutoKenbunshoku(on)
 	cfg.AutoKenbunshoku = on == true
 	getgenv().SigmaFishConfig = cfg
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku
-	if on then
-		print("[Sigma Haki] Auto Kenbunshoku ON")
-		print("[Sigma Haki]", hakiDiagSnapshot())
-	else
+	if not on then
 		stepHakiForceOff()
 	end
 	ensureLoopRunning()
@@ -5404,10 +5412,7 @@ function SigmaFish.setAutoBusoshoku(on)
 	cfg.AutoBusoshoku = on == true
 	getgenv().SigmaFishConfig = cfg
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku
-	if on then
-		print("[Sigma Haki] Auto Busoshoku ON")
-		print("[Sigma Haki]", hakiDiagSnapshot())
-	else
+	if not on then
 		stepHakiForceOff()
 	end
 	ensureLoopRunning()
@@ -5423,9 +5428,6 @@ function SigmaFish.setFastHaki(on)
 		STATE.hakiFastRunning = false
 		STATE.hakiWasFull = false
 		hakiClearDrainWatch()
-	else
-		print("[Sigma Haki] Fast Haki ON")
-		print("[Sigma Haki]", hakiDiagSnapshot())
 	end
 	ensureLoopRunning()
 end
@@ -5437,9 +5439,6 @@ function SigmaFish.setAutoRayleigh(on)
 	RAYLEIGH.ON = cfg.AutoRayleigh
 	if not RAYLEIGH.ON then
 		RAYLEIGH._meditateTrack = nil
-	else
-		print("[Sigma Haki] Auto Rayleigh ON")
-		print("[Sigma Haki]", hakiDiagSnapshot())
 	end
 	ensureLoopRunning()
 end
@@ -5450,19 +5449,7 @@ function SigmaFish.setAutoAffinity(on)
 	getgenv().SigmaFishConfig = cfg
 	AFFINITY.ON = cfg.AutoAffinity
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
-	if AFFINITY.ON then
-		print("[Sigma Affinity] Auto Affinity ON | slot1 | targets:", table.concat(
-			(function()
-				local parts = {}
-				for _, s in ipairs(AFFINITY.STATS) do
-					if AFFINITY.TARGETS[s] then
-						parts[#parts + 1] = s .. "=" .. tostring(AFFINITY.TARGETS[s])
-					end
-				end
-				return parts
-			end)(), ", "
-		))
-	else
+	if not AFFINITY.ON then
 		stopAffinityLoop()
 	end
 	refreshAffinityLoop()
