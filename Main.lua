@@ -129,8 +129,10 @@ HAKI = {
 	FAST_CD = 10,
 	STOP_LEVEL = 1000,
 	MIN_MOB_LEVEL = 150,
+	MIN_Y = 210.6,
 	CLUSTER_RADIUS = 90,
 	TP_INTERVAL = 0.25,
+	HOLD_RETP_DIST = 24,
 	SKILL_RETRY = 1.2,
 	DEBUG_INTERVAL = 4,
 	_logAt = {},
@@ -2727,10 +2729,37 @@ end
 
 function isCaveDemonForHaki(mob)
 	local n = normMob(mob.Name)
-	if not (string.find(n, "cave", 1, true) and string.find(n, "demon", 1, true)) then return false end
-	local lv = mobLevelFromName(mob.Name)
-	if lv and lv < HAKI.MIN_MOB_LEVEL then return false end
-	return true
+	if string.find(n, "cave", 1, true) and string.find(n, "demon", 1, true) then
+		local lv = mobLevelFromName(mob.Name)
+		if lv and lv < HAKI.MIN_MOB_LEVEL then return false end
+		return true
+	end
+	if string.find(n, "demon", 1, true) then
+		local lv = mobLevelFromName(mob.Name)
+		if lv and lv >= HAKI.MIN_MOB_LEVEL then return true end
+	end
+	return false
+end
+
+function findHakiFarmMob()
+	local hrp = getHRP()
+	local candidates = {}
+	for _, mob in ipairs(getAliveEnemies()) do
+		if isCaveDemonForHaki(mob) then
+			local pos = getPos(mob)
+			if pos then
+				candidates[#candidates + 1] = { mob = mob, pos = pos, pri = string.find(normMob(mob.Name), "cave", 1, true) and 2 or 1 }
+			end
+		end
+	end
+	if #candidates < 1 then return nil end
+	table.sort(candidates, function(a, b)
+		local da = hrp and (hrp.Position - a.pos).Magnitude or math.huge
+		local db = hrp and (hrp.Position - b.pos).Magnitude or math.huge
+		if a.pri ~= b.pri then return a.pri > b.pri end
+		return da < db
+	end)
+	return candidates[1].mob
 end
 
 function findCaveDemonClusterTarget()
@@ -2742,7 +2771,7 @@ function findCaveDemonClusterTarget()
 			if pos then table.insert(candidates, { mob = mob, pos = pos }) end
 		end
 	end
-	if #candidates < 1 then return nil end
+	if #candidates < 1 then return findHakiFarmMob() end
 	local best, bestCrowd, bestDist = nil, -1, math.huge
 	for i, a in ipairs(candidates) do
 		local crowd = 0
@@ -2757,25 +2786,46 @@ function findCaveDemonClusterTarget()
 	return best
 end
 
-function tpUnderMob(mob)
+function tpHakiNearMob(mob)
 	local hrp = getHRP()
 	local mobRoot = mob and (mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true))
-	if not hrp or not mobRoot then return false end
-	pcall(function() hrp.CFrame = CFrame.new(mobRoot.Position + Vector3.new(0, -2, 0)) end)
+	local pos = mobRoot and mobRoot.Position or getPos(mob)
+	if not hrp or not pos then return false end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum:UnequipTools() end) end
+	local facing = mobRoot and mobRoot.CFrame.LookVector or Vector3.new(0, 0, 1)
+	facing = Vector3.new(facing.X, 0, facing.Z)
+	if facing.Magnitude < 0.1 then facing = Vector3.new(0, 0, 1) else facing = facing.Unit end
+	local stand = pos + facing * 2 + Vector3.new(0, 1, 0)
+	if stand.Y < HAKI.MIN_Y then stand = Vector3.new(stand.X, HAKI.MIN_Y, stand.Z) end
+	pcall(function() hrp.CFrame = CFrame.new(stand, Vector3.new(pos.X, stand.Y, pos.Z)) end)
 	zeroHRPVel(hrp)
 	return true
 end
 
+function tpUnderMob(mob)
+	return tpHakiNearMob(mob)
+end
+
 function hakiGoToFarmSpot(forceTp)
 	local now = os.clock()
-	if not forceTp and (now - (STATE.hakiLastTp or 0)) < HAKI.TP_INTERVAL then return end
+	if not forceTp and (now - (STATE.hakiLastTp or 0)) < HAKI.TP_INTERVAL then return STATE.hakiHoldMob end
 	local target = STATE.hakiHoldMob
 	local hum = target and target:FindFirstChildOfClass("Humanoid")
 	if not target or not hum or hum.Health <= 0 then
 		target = findCaveDemonClusterTarget()
 		STATE.hakiHoldMob = target
 	end
-	if target then tpUnderMob(target) end
+	if target then
+		local hrp = getHRP()
+		local mobPos = getPos(target)
+		local dist = (hrp and mobPos) and (hrp.Position - mobPos).Magnitude or math.huge
+		if forceTp or dist >= HAKI.HOLD_RETP_DIST then
+			tpHakiNearMob(target)
+		end
+	else
+		hakiLog("fast:nomob", string.format("no farm mob Lv%d+ (Alive=%d)", HAKI.MIN_MOB_LEVEL, #getAliveEnemies()), 5)
+	end
 	STATE.hakiLastTp = now
 	return target
 end
@@ -2790,6 +2840,26 @@ function tryHakiRejoin()
 	STATE.hakiHoldMob = nil
 	pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
 	return true
+end
+
+function stepHakiForceOff()
+	local char = player.Character
+	if not char then return end
+	local now = os.clock()
+	if not HAKI.AUTO_KEN and char:GetAttribute("Observation") == true then
+		if now - (STATE.hakiLastKenOff or 0) >= HAKI.SKILL_RETRY then
+			STATE.hakiLastKenOff = now
+			pressHakiSkill("Observation")
+			hakiLog("ken:off", "Auto Ken OFF -> disable Observation", 2)
+		end
+	end
+	if not HAKI.AUTO_BUSO and char:GetAttribute("Haki") == true then
+		if now - (STATE.hakiLastBusoOff or 0) >= HAKI.SKILL_RETRY then
+			STATE.hakiLastBusoOff = now
+			pressHakiSkill("Haki")
+			hakiLog("buso:off", "Auto Buso OFF -> disable Busoshoku", 2)
+		end
+	end
 end
 
 function stepAutoKenbunshoku()
@@ -2839,7 +2909,10 @@ function stepAutoBusoshoku()
 end
 
 function stepFastHaki()
-	if not HAKI.FAST then return false end
+	if not HAKI.FAST then
+		STATE.hakiFastRunning = false
+		return false
+	end
 	if not isActive() then
 		hakiLog("fast:block", "Fast Haki — isActive=false", 6)
 		return false
@@ -2857,18 +2930,19 @@ function stepFastHaki()
 		hakiLog("fast:nobar", "cannot read haki bar (attr/ui)", 6)
 		return false
 	end
+	local pct = math.floor(ratio * 100 + 0.5)
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
 		local mob = hakiGoToFarmSpot(true)
-		hakiLog("fast:full", string.format("bar full %d%% (%d/%d) -> TP mob=%s", math.floor(ratio * 100), amount or 0, cap or 0, tostring(mob and mob.Name)), 3)
+		hakiLog("fast:full", string.format("bar full %d%% (%d/%d) -> TP mob=%s", pct, amount or 0, cap or 0, tostring(mob and mob.Name)), 3)
 		return true
 	end
 	if STATE.hakiFastRunning and ratio <= HAKI.EMPTY_RATIO then
-		hakiLog("fast:rejoin", string.format("bar empty %d%% -> rejoin", math.floor(ratio * 100)), 3)
+		hakiLog("fast:rejoin", string.format("bar empty %d%% -> rejoin", pct), 3)
 		return tryHakiRejoin()
 	end
-	hakiGoToFarmSpot(true)
-	hakiLog("fast:wait", string.format("waiting bar %d%% (%d/%d)", math.floor(ratio * 100), amount or 0, cap or 0), 5)
+	local mob = hakiGoToFarmSpot(true)
+	hakiLog("fast:fill", string.format("fill bar %d%% (%d/%d) -> TP mob=%s", pct, amount or 0, cap or 0, tostring(mob and mob.Name)), 4)
 	return true
 end
 
@@ -3083,9 +3157,13 @@ function stepRayleigh()
 end
 
 function stepHakiFeatures()
-	if not hakiModeEnabled() then return end
+	if not hakiModeEnabled() then
+		stepHakiForceOff()
+		return
+	end
 	hakiLog("diag", hakiDiagSnapshot(), 8)
 	local ok, err = pcall(function()
+		stepHakiForceOff()
 		stepAutoKenbunshoku()
 		stepAutoBusoshoku()
 		if RAYLEIGH.ON and stepRayleigh() then return end
@@ -3155,7 +3233,11 @@ function startHubLoop()
 		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
 			pcall(hubTick)
 			local waitT = HUB.LOOP_DELAY
-			if questWorkActive() then waitT = 0.05 end
+			if questWorkActive() then
+				waitT = 0.05
+			elseif HAKI.FAST then
+				waitT = 0.12
+			end
 			task.wait(waitT)
 		end
 	end)
@@ -3257,6 +3339,8 @@ function SigmaFish.setAutoKenbunshoku(on)
 	if on then
 		print("[Sigma Haki] Auto Kenbunshoku ON")
 		print("[Sigma Haki]", hakiDiagSnapshot())
+	else
+		stepHakiForceOff()
 	end
 	ensureLoopRunning()
 end
@@ -3269,6 +3353,8 @@ function SigmaFish.setAutoBusoshoku(on)
 	if on then
 		print("[Sigma Haki] Auto Busoshoku ON")
 		print("[Sigma Haki]", hakiDiagSnapshot())
+	else
+		stepHakiForceOff()
 	end
 	ensureLoopRunning()
 end
