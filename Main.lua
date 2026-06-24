@@ -15,6 +15,7 @@ UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
 VirtualInputManager = game:GetService("VirtualInputManager")
+VIM = VirtualInputManager
 TeleportService = game:GetService("TeleportService")
 RunService = game:GetService("RunService")
 player = Players.LocalPlayer
@@ -1787,14 +1788,10 @@ function tpNearMob(mob, force)
 end
 
 function vimM1Click()
-	if not VirtualInputManager then return false end
-	pcall(function()
-		VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, true, game, 0)
-	end)
-	task.wait(COMBAT.M1_CLICK_GAP)
-	pcall(function()
-		VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, false, game, 0)
-	end)
+	if not VIM then return false end
+	VIM:SendMouseButtonEvent(500, 300, 0, true, game, 0)
+	task.wait(0.03)
+	VIM:SendMouseButtonEvent(500, 300, 0, false, game, 0)
 	return true
 end
 
@@ -1811,18 +1808,11 @@ function startM1Loop(aliveFn, mob)
 	local run = STATE.m1RunId + 1
 	STATE.m1RunId = run
 	task.spawn(function()
-		while isActive() and STATE.m1RunId == run and task.wait(COMBAT.M1_LOOP_WAIT) do
+		while STATE.m1RunId == run and task.wait(0.15) do
 			if aliveFn and not aliveFn() then continue end
-			ensureCombatReady()
-			if VirtualInputManager then
-				pcall(function()
-					VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, true, game, 0)
-				end)
-				task.wait(COMBAT.M1_CLICK_GAP)
-				pcall(function()
-					VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, false, game, 0)
-				end)
-			end
+			VIM:SendMouseButtonEvent(500, 300, 0, true, game, 0)
+			task.wait(0.03)
+			VIM:SendMouseButtonEvent(500, 300, 0, false, game, 0)
 		end
 	end)
 	return run
@@ -1866,7 +1856,6 @@ function attackLoopOnMob(mob, mode)
 				zeroHRPVel(hrp)
 			end
 		end
-		ensureCombatReady()
 		task.wait(QUEST.ATTACK_CD)
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
@@ -1888,8 +1877,8 @@ function attackBurstOnMob(mob, mode)
 	local aliveFn = function()
 		return questMobKillEnabled() and questModeOk(mode)
 	end
-	startM1Loop(aliveFn, mob)
 	ensureCombatReady()
+	startM1Loop(aliveFn, mob)
 	local ok = attackLoopOnMob(mob, mode)
 	stopM1Loop()
 	setQuestMobKill(false)
