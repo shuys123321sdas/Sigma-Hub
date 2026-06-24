@@ -1,23 +1,21 @@
---[[
- SigmaUI — WindUI layout wired to sigma.lua (fishing backend)
- Loaded by SigmaHub.lua — no sample toggles.
-]]
+--[[ SigmaUI — Fishing tab (Auto Fish / Auto Chest / Cook+Sell) ]]
 
 local SigmaUI = {}
 
 local function statusText(Fish)
 	if not Fish or not Fish.getStatus then
-		return "sigma.lua: not loaded"
+		return "Main.lua: not loaded"
 	end
 	local s = Fish.getStatus()
-	local lines = {
+	return table.concat({
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Auto Super Rod: " .. (s.autoSuperRod and "ON" or "OFF"),
+		"Auto Chest: " .. (s.autoSuperRod and "ON" or "OFF"),
+		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
 		"Sell at: " .. tostring(s.sellAt or "?") .. " fish",
-		"Stats.Fish: " .. tostring(s.fishCount or "?"),
+		"Sellable: " .. tostring(s.sellable or "?"),
+		"Quest: " .. tostring(s.quest or "-"),
 		"Minigame: " .. (s.inMinigame and "active" or "idle"),
-	}
-	return table.concat(lines, "\n")
+	}, "\n")
 end
 
 function SigmaUI.build(hub, Fish, opts)
@@ -30,7 +28,8 @@ function SigmaUI.build(hub, Fish, opts)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoFish = cfg.AutoFish == true
 	cfg.AutoSuperRod = cfg.AutoSuperRod == true
-	cfg.SellAt = tonumber(cfg.SellAt) or (cfg.AutoSuperRod and 40 or 15)
+	cfg.AutoCookSell = cfg.AutoCookSell ~= false
+	cfg.SellAt = tonumber(cfg.SellAt) or 40
 	getgenv().SigmaFishConfig = cfg
 
 	local Window = hub:CreateWindow({
@@ -63,9 +62,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	if Window.ConfigManager then
 		local c = Window.ConfigManager:Config("sigma-fish")
-		if c and c.SetAsCurrent then
-			c:SetAsCurrent()
-		end
+		if c and c.SetAsCurrent then c:SetAsCurrent() end
 	end
 
 	local MainTab = Window:Tab({ Title = "Main", Icon = "house" })
@@ -73,14 +70,8 @@ function SigmaUI.build(hub, Fish, opts)
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
 	task.defer(function()
-		-- ═══ MAIN ═══
-		MainTab:Paragraph({
-			Title = "Sigma Hub",
-			Desc = "Auto fish backend: sigma.lua (separate from a.lua)",
-		})
-
 		local statusPara = MainTab:Paragraph({
-			Title = "Fishing Status",
+			Title = "Status",
 			Desc = statusText(Fish),
 			Buttons = {
 				{
@@ -95,85 +86,80 @@ function SigmaUI.build(hub, Fish, opts)
 			},
 		})
 
-		-- ═══ FISHING ═══
-		FishTab:Section({ Title = "Auto Fish", Icon = "fish", Box = true, BoxBorder = true })
+		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
 
 		FishTab:Toggle({
 			Title = "Auto Fish",
-			Desc = "Bật vòng lặp câu cá (sigma.lua)",
+			Desc = "Quăng câu tại chỗ đang đứng",
 			Value = cfg.AutoFish,
 			Flag = "Sigma_AutoFish",
 			Callback = function(v)
 				if not Fish or not Fish.setAutoFish then
-					notify(hub, "Fishing", "sigma.lua chưa load", "triangle-alert")
+					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
 					return
 				end
 				Fish.setAutoFish(v)
 				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
-				if statusPara and statusPara.SetDesc then
-					statusPara:SetDesc(statusText(Fish))
-				end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
 			end,
 		})
 
 		FishTab:Toggle({
-			Title = "Auto Super Rod",
-			Desc = "Quest Super Rod tại Fisherman (đứng sát NPC + câu quest fish)",
+			Title = "Auto Chest",
+			Desc = "Super Rod quest — nhận/giao từ xa",
 			Value = cfg.AutoSuperRod,
-			Flag = "Sigma_AutoSuperRod",
+			Flag = "Sigma_AutoChest",
 			Callback = function(v)
 				if not Fish or not Fish.setAutoSuperRod then
-					notify(hub, "Fishing", "sigma.lua chưa load", "triangle-alert")
+					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
 					return
 				end
 				Fish.setAutoSuperRod(v)
 				getgenv().SigmaFishConfig.AutoSuperRod = v
-				notify(hub, "Super Rod", v and "ON" or "OFF", "sparkles", 2)
-				if statusPara and statusPara.SetDesc then
-					statusPara:SetDesc(statusText(Fish))
-				end
+				if v then getgenv().SigmaFishConfig.AutoFish = true end
+				notify(hub, "Auto Chest", v and "ON" or "OFF", "sparkles", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+			end,
+		})
+
+		FishTab:Toggle({
+			Title = "Auto Cook + Sell",
+			Desc = "Tự cook + sell khi đủ cá",
+			Value = cfg.AutoCookSell,
+			Flag = "Sigma_AutoCookSell",
+			Callback = function(v)
+				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
+				getgenv().SigmaFishConfig.AutoCookSell = v
+				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
 			end,
 		})
 
 		FishTab:Slider({
-			Title = "Sell At (fish count)",
-			Desc = "Đủ số cá → cook + sell (Super Rod mặc định 40)",
-			Value = { Min = 5, Max = 80, Default = cfg.SellAt or 40 },
+			Title = "Cook + Sell Every Fish",
+			Desc = "Số cá tối thiểu để auto cook + sell",
+			Value = { Min = 5, Max = 80, Default = cfg.SellAt },
 			Flag = "Sigma_FishSellAt",
 			Callback = function(v)
-				if Fish and Fish.setSellAt then
-					Fish.setSellAt(v)
-				end
+				if Fish and Fish.setSellAt then Fish.setSellAt(v) end
 				getgenv().SigmaFishConfig.SellAt = v
 			end,
 		})
 
-		FishTab:Paragraph({
-			Title = "Quest fish (Super Rod)",
-			Desc = table.concat({
-				"Fisherman's Favor → Wood Rod",
-				"Fisherman's Task → Sturdy Rod",
-				"Fisherman's Challenge → Super Rod",
-			}, "\n"),
-		})
-
 		FishTab:Button({
-			Title = "Stop Fishing",
-			Icon = "square",
-			Color = Color3.fromRGB(220, 80, 80),
+			Title = "Cook Fish + Sell Fish",
+			Icon = "utensils",
+			Color = PRIMARY,
 			Callback = function()
-				if Fish and Fish.stop then
-					Fish.stop()
-					notify(hub, "Fishing", "Stopped", "square", 2)
+				if not Fish or not Fish.cookSell then
+					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
+					return
 				end
-				if statusPara and statusPara.SetDesc then
-					statusPara:SetDesc(statusText(Fish))
-				end
+				Fish.cookSell()
+				notify(hub, "Cook+Sell", "Done", "utensils", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
 			end,
 		})
-
-		-- ═══ SETTINGS ═══
-		SettingsTab:Section({ Title = "Hub", Icon = "settings" })
 
 		SettingsTab:Button({
 			Title = "Reload Hub",
@@ -181,24 +167,13 @@ function SigmaUI.build(hub, Fish, opts)
 			Color = PRIMARY,
 			Callback = function()
 				task.defer(function()
-					if getgenv().ReloadSigmaHub then
-						getgenv().ReloadSigmaHub()
-					end
+					if getgenv().ReloadSigmaHub then getgenv().ReloadSigmaHub() end
 				end)
 			end,
 		})
 
-		SettingsTab:Paragraph({
-			Title = "Files",
-			Desc = table.concat({
-				"UI: SigmaHub.lua + SigmaUI.lua",
-				"Backend: sigma.lua",
-				"Library: " .. (hub.Build or "SigmaHub"),
-			}, "\n"),
-		})
-
-		if Window.SelectTab and MainTab.Index then
-			Window:SelectTab(MainTab.Index)
+		if Window.SelectTab and FishTab.Index then
+			Window:SelectTab(FishTab.Index)
 		end
 	end)
 
