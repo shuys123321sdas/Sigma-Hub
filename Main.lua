@@ -798,6 +798,20 @@ function questModeEnabled()
 	return QUEST.AUTO or QUEST.EXPERTISE
 end
 
+function questPickEnabled()
+	return QUEST.AUTO == true
+end
+
+function questExpertiseEnabled()
+	return QUEST.EXPERTISE == true
+end
+
+function questModeOk(mode)
+	if mode == "expertise" then return questExpertiseEnabled() end
+	if mode == "pick" then return questPickEnabled() end
+	return questModeEnabled()
+end
+
 function currentQuestList()
 	if QUEST.EXPERTISE then return { "Old Beggar" } end
 	return QUEST.PICK
@@ -809,8 +823,9 @@ function stopQuestWork()
 	STATE.questRunId = (STATE.questRunId or 0) + 1
 end
 
-function questRunAlive(runId)
-	return questModeEnabled() and isActive() and STATE.questRunId == runId
+function questRunAlive(runId, mode)
+	if not isActive() or STATE.questRunId ~= runId then return false end
+	return questModeOk(mode)
 end
 
 function tpNearMob(mob)
@@ -873,7 +888,7 @@ function attackLoopOnMob(mob)
 	ensureCombatReady()
 	tpNearMob(mob)
 	local lastHp, stallAt = hum.Health, os.clock()
-	while isActive() and questMobKillEnabled() and questModeEnabled() do
+	while isActive() and questMobKillEnabled() and questPickEnabled() do
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
 		tpNearMob(mob)
@@ -904,20 +919,23 @@ function attackBurstOnMob(mob)
 	return ok or not hum or hum.Health <= 0
 end
 
-function stepFarmQuest(npc, info)
-	if not questModeEnabled() then return false end
+function stepFarmQuest(npc, info, mode)
+	if not questModeOk(mode or "pick") then return false end
 	local q = getQuests()
 	local groups = mobGroupsForQuest(q, info)
 	if #groups < 1 then return false end
+	if not questModeOk(mode or "pick") then return false end
 	ensureCombatReady()
 	local mob = nearestQuestMob(groups)
 	if not mob then return false end
 	local hrp = getHRP()
 	local pos = getPos(mob)
 	if hrp and pos and (hrp.Position - pos).Magnitude > QUEST.TARGET_SCAN then
+		if not questModeOk(mode or "pick") then return false end
 		tpNearMob(mob)
 		task.wait(0.2)
 	end
+	if not questModeOk(mode or "pick") then return false end
 	return attackBurstOnMob(mob)
 end
 
@@ -1456,9 +1474,9 @@ function runFavorQuest()
 	end
 	if active == FISH.Q_FAVOR and hasItem("Package") then return deliverPackage() end
 	if active == FISH.Q_FAVOR and not hasItem("Package") and not q.Completed then
-		questExec(fm, "Accept", FISH.Q_FAVOR) return true
+		clickNPC(fm) questExec(fm, "Accept", FISH.Q_FAVOR) return true
 	end
-	if active ~= FISH.Q_FAVOR then questExec(fm, "Accept", FISH.Q_FAVOR) return true end
+	if active ~= FISH.Q_FAVOR then clickNPC(fm) questExec(fm, "Accept", FISH.Q_FAVOR) return true end
 	return false
 end
 
@@ -1471,7 +1489,7 @@ function runTaskQuest()
 		if os.clock() - STATE.lastDeliver >= 3 then deliverQuestFish() end
 		return false
 	end
-	questExec(fm, "Accept", FISH.Q_TASK)
+	clickNPC(fm) questExec(fm, "Accept", FISH.Q_TASK)
 	return true
 end
 
@@ -1481,10 +1499,10 @@ function runChallengeQuest()
 	if not q or not fm then return false end
 	if not qHist(FISH.Q_TASK) then return false end
 	if q.Active == FISH.Q_CHALLENGE then
-		if q.Completed then questExec(fm, "Claim") equipRod("Super Rod") return true end
+		if q.Completed then clickNPC(fm) questExec(fm, "Claim") equipRod("Super Rod") return true end
 		return false
 	end
-	questExec(fm, "Accept", FISH.Q_CHALLENGE)
+	clickNPC(fm) questExec(fm, "Accept", FISH.Q_CHALLENGE)
 	return true
 end
 
@@ -1531,16 +1549,20 @@ function activeQuestInList(q, list)
 	return nil, nil
 end
 
-function tryAcceptQuestList(list)
+function tryAcceptQuestList(list, mode)
+	if not questModeOk(mode or "pick") then return false end
 	local n = #list
 	if n < 1 then return false end
 	for step = 0, n - 1 do
+		if not questModeOk(mode or "pick") then return false end
 		local idx = ((QUEST.RIDX - 1 + step) % n) + 1
 		local npc = list[idx]
 		local info = QUEST.DB[npc]
 		if info and info.kind ~= "sam" and info.kind ~= "skip" then
 			local model = findNPC(npc)
-			if model and questExec(model, "Accept", info.quest) then
+			if model then
+				clickNPC(model)
+				questExec(model, "Accept", info.quest)
 				QUEST.RIDX = (idx % n) + 1
 				return true
 			end
@@ -1562,9 +1584,11 @@ function deliverQuestItems(npc, info)
 	return any
 end
 
-function stepTalkQuest(npc, info)
+function stepTalkQuest(npc, info, mode)
+	if not questModeOk(mode or "pick") then return false end
 	local target = findNPC(info.talkNPC)
 	if not target then return false end
+	if not questModeOk(mode or "pick") then return false end
 	tpNear(target)
 	return questExec(target, "Deliver", info.deliver)
 end
@@ -1609,7 +1633,7 @@ function safeFirePrompt(pr)
 	return false
 end
 
-function fireCollectAt(item)
+function fireCollectAt(item, aliveFn)
 	local cds = activeClickDetectors(item)
 	local prompts = {}
 	for _, d in ipairs(item:GetDescendants()) do
@@ -1619,10 +1643,13 @@ function fireCollectAt(item)
 	local pos = getPos(item)
 	local hrp = getHRP()
 	if hrp and pos then
+		if aliveFn and not aliveFn() then return false end
 		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, QUEST.COLLECT_TP_UP, 0)) end)
 		task.wait(QUEST.COLLECT_WAIT)
+		if aliveFn and not aliveFn() then return false end
 	end
 	for _ = 1, 2 do
+		if aliveFn and not aliveFn() then return false end
 		for _, cd in ipairs(cds) do safeFireClick(cd) end
 		for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
 		task.wait(0.05)
@@ -1726,9 +1753,11 @@ function deliverCollectItems(npc, info)
 	return any
 end
 
-function stepCollectQuest(npc, info)
-	if not questModeEnabled() then return false end
+function stepCollectQuest(npc, info, mode)
+	mode = mode or (npc == "Old Beggar" and "expertise" or "pick")
+	if not questModeOk(mode) then return false end
 	local runId = STATE.questRunId or 0
+	local aliveFn = function() return questRunAlive(runId, mode) end
 	if questDone() then
 		deliverCollectItems(npc, info)
 		return false
@@ -1738,8 +1767,8 @@ function stepCollectQuest(npc, info)
 		local folder = resolvePath(fp)
 		if folder then
 			for _, item in ipairs(folder:GetChildren()) do
-				if not questRunAlive(runId) or questDone() then return total > 0 end
-				if not collectNameBlocked(item.Name) and fireCollectAt(item) then
+				if not aliveFn() or questDone() then return total > 0 end
+				if not collectNameBlocked(item.Name) and fireCollectAt(item, aliveFn) then
 					total += 1
 					if npc == "Old Beggar" then
 						useGoldenApplesForOldBeggar()
@@ -1754,7 +1783,8 @@ function stepCollectQuest(npc, info)
 	return total > 0
 end
 
-function stepReachQuest(npc, info)
+function stepReachQuest(npc, info, mode)
+	if not questModeOk(mode or "pick") then return false end
 	local pos
 	if type(info.pos) == "table" then
 		pos = Vector3.new(info.pos[1], info.pos[2], info.pos[3])
@@ -1764,12 +1794,15 @@ function stepReachQuest(npc, info)
 		if p then pos = p + Vector3.new(0, QUEST.TP_OFFSET, 0) end
 	end
 	if not pos then return false end
+	if not questModeOk(mode or "pick") then return false end
 	local hrp = getHRP()
 	if hrp then pcall(function() hrp.CFrame = CFrame.new(pos) end) end
 	return true
 end
 
-function stepReachAllQuest(npc, info)
+function stepReachAllQuest(npc, info, mode)
+	mode = mode or "pick"
+	if not questModeOk(mode) then return false end
 	local folder = resolvePath(info.folder)
 	if not folder then return false end
 	local parts = {}
@@ -1778,7 +1811,7 @@ function stepReachAllQuest(npc, info)
 	end
 	local runId = STATE.questRunId or 0
 	for _, p in ipairs(parts) do
-		if not questRunAlive(runId) or questDone() then break end
+		if not questRunAlive(runId, mode) or questDone() then break end
 		local hrp = getHRP()
 		if hrp then
 			pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, QUEST.TP_OFFSET, 0)) end)
@@ -1804,69 +1837,81 @@ function activeQuestInDB(q)
 end
 
 function questWorkActive()
-	if not questModeEnabled() then return false end
 	local q = getQuests()
 	if not q or not q.Active or q.Active == "" then return false end
-	local _, info = activeQuestInList(q, currentQuestList())
-	if not info then return false end
-	if q.Completed then return not info.noClaim end
-	return true
+	if questExpertiseEnabled() then
+		local _, info = activeQuestInList(q, { "Old Beggar" })
+		if info then
+			if q.Completed then return not info.noClaim end
+			return true
+		end
+	end
+	if questPickEnabled() then
+		local _, info = activeQuestInList(q, QUEST.PICK)
+		if info then
+			if q.Completed then return not info.noClaim end
+			return true
+		end
+	end
+	return false
 end
 
-function stepActiveQuest(npc, info)
-	if not questModeEnabled() then return false end
+function stepActiveQuest(npc, info, mode)
+	mode = mode or (npc == "Old Beggar" and "expertise" or "pick")
+	if not questModeOk(mode) then return false end
 	local q = getQuests()
 	if not q then return false end
 	if q.Completed then
 		if info.noClaim then return false end
 		local model = findNPC(npc)
-		if model then questExec(model, "Claim") end
+		if model then clickNPC(model) questExec(model, "Claim") end
 		return true
 	end
 	local kind = info.kind or "mob"
 	if kind == "deliver" then
 		return stepDeliverQuest(npc, info)
 	elseif kind == "collect" then
-		return stepCollectQuest(npc, info)
+		return stepCollectQuest(npc, info, mode)
 	elseif kind == "talk" then
-		return stepTalkQuest(npc, info)
+		return stepTalkQuest(npc, info, mode)
 	elseif kind == "carry" then
 		if info.quest == FISH.Q_FAVOR then return runFavorQuest() end
 		if hasItem(info.carryItem or "Package") then return deliverPackage() end
 		local model = findNPC(npc)
-		if model then questExec(model, "Accept", info.quest) end
+		if model then clickNPC(model) questExec(model, "Accept", info.quest) end
 		return true
 	elseif kind == "reach" then
-		return stepReachQuest(npc, info)
+		return stepReachQuest(npc, info, mode)
 	elseif kind == "reachAll" then
-		return stepReachAllQuest(npc, info)
+		return stepReachAllQuest(npc, info, mode)
 	elseif questInfoNeedsKill(info) then
-		return stepFarmQuest(npc, info)
+		return stepFarmQuest(npc, info, mode)
 	end
 	return false
 end
 
-function runQuestList(list)
-	if not questModeEnabled() then return end
+function runQuestList(list, mode)
+	mode = mode or "pick"
+	if not questModeOk(mode) then return end
 	list = normalizeQuestPick(list)
 	if #list < 1 then return end
 	local q = getQuests()
 	if not q then return end
 	local npc, info = activeQuestInList(q, list)
 	if npc then
-		stepActiveQuest(npc, info)
+		stepActiveQuest(npc, info, mode)
 		return
 	end
-	-- Giống runFavorQuest: quest khác đang active vẫn Accept quest đã chọn
-	tryAcceptQuestList(list)
+	-- Giống runFavorQuest: quest khác (kể cả Fisherman) vẫn Accept quest đã chọn
+	tryAcceptQuestList(list, mode)
 end
 
 function stepExpertiseQuest()
-	runQuestList({ "Old Beggar" })
+	runQuestList({ "Old Beggar" }, "expertise")
 end
 
 function stepPickedQuests()
-	runQuestList(QUEST.PICK)
+	runQuestList(QUEST.PICK, "pick")
 end
 
 function stashQuestFish()
@@ -2194,7 +2239,8 @@ function featureTick()
 	if spawnOpen() or not worldReady() then return end
 	if QUEST.EXPERTISE then
 		stepExpertiseQuest()
-	elseif QUEST.AUTO then
+	end
+	if QUEST.AUTO then
 		stepPickedQuests()
 	end
 	if FISH.ON and not questWorkActive() then fishStep() end
@@ -2251,14 +2297,11 @@ end
 
 function SigmaFish.setAutoQuest(on)
 	local cfg = getgenv().SigmaFishConfig or {}
-	local was = QUEST.AUTO
 	cfg.AutoQuest = on == true
 	getgenv().SigmaFishConfig = cfg
 	QUEST.AUTO = cfg.AutoQuest
-	if was and not cfg.AutoQuest then
-		stopM1Loop()
-		setQuestMobKill(false)
-		STATE.questRunId = (STATE.questRunId or 0) + 1
+	if not cfg.AutoQuest then
+		stopQuestWork()
 	end
 	STATE.pause = false
 	STATE.cooking = false
@@ -2275,14 +2318,11 @@ end
 
 function SigmaFish.setAutoExpertise(on)
 	local cfg = getgenv().SigmaFishConfig or {}
-	local was = QUEST.EXPERTISE
 	cfg.AutoExpertise = on == true
 	getgenv().SigmaFishConfig = cfg
 	QUEST.EXPERTISE = cfg.AutoExpertise
-	if was and not cfg.AutoExpertise then
-		stopM1Loop()
-		setQuestMobKill(false)
-		STATE.questRunId = (STATE.questRunId or 0) + 1
+	if not cfg.AutoExpertise then
+		stopQuestWork()
 	end
 	STATE.pause = false
 	ensureLoopRunning()
