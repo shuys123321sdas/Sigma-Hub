@@ -88,6 +88,10 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.SkillKeys = cfg.SkillKeys or {}
 	cfg.AutoWhitelistRejoin = cfg.AutoWhitelistRejoin == true
 	cfg.RejoinWhitelist = tostring(cfg.RejoinWhitelist or "")
+	cfg.CacheUsePick = cfg.CacheUsePick or {}
+	cfg.CacheDropPick = cfg.CacheDropPick or {}
+	cfg.AutoCacheDrop = cfg.AutoCacheDrop == true
+	cfg.AutoUseConsumables = cfg.AutoUseConsumables ~= false
 	cfg.AffinityMelee = cfg.AffinityMelee
 	cfg.AffinitySword = cfg.AffinitySword
 	cfg.AffinitySniper = cfg.AffinitySniper
@@ -251,6 +255,8 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoClaimSamToggle, autoDropCompassToggle, autoFindSamToggle
 	local autoSkillToggle, skillKeysDropdown, skillHoldInput
 	local autoWhitelistToggle, rejoinWhitelistInput
+	local cacheCountPara, cacheUseDropdown, cacheDropDropdown
+	local autoCacheDropToggle, autoUseConsumablesToggle
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -361,6 +367,100 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				Fish.cookSell()
 				notify(hub, "Cook + Sell", "Done", "utensils", 2)
+			end,
+		})
+
+		FishTab:Section({ Title = "Backpack Cache", Icon = "package", Box = true, BoxBorder = true })
+
+		local cacheKeyOptions = { "Copper", "Silver", "Gold", "Platinum", "Compass" }
+
+		local function formatCacheCounts()
+			local FishMod = Fish or getgenv().SigmaFish
+			if not FishMod or not FishMod.getCacheCounts then return "—" end
+			local ok, counts = pcall(FishMod.getCacheCounts)
+			if not ok or type(counts) ~= "table" then return "—" end
+			return string.format(
+				"Copper: %d | Silver: %d | Gold: %d | Platinum: %d | Compass: %d",
+				counts.Copper or 0, counts.Silver or 0, counts.Gold or 0,
+				counts.Platinum or 0, counts.Compass or 0
+			)
+		end
+
+		cacheCountPara = FishTab:Paragraph({
+			Title = "Cache Count",
+			Desc = formatCacheCounts(),
+		})
+
+		task.spawn(function()
+			while cacheCountPara and cacheCountPara.SetDesc do
+				cacheCountPara:SetDesc(formatCacheCounts())
+				task.wait(1.5)
+			end
+		end)
+
+		cacheUseDropdown = FishTab:Dropdown({
+			Title = "Use Cache",
+			Values = cacheKeyOptions,
+			Value = cfg.CacheUsePick or {},
+			Multi = true,
+			Flag = "Sigma_CacheUsePick",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.CacheUsePick = v
+				if Fish and Fish.setCacheUsePick then Fish.setCacheUsePick(v) end
+			end,
+		})
+
+		cacheDropDropdown = FishTab:Dropdown({
+			Title = "Drop Cache",
+			Values = cacheKeyOptions,
+			Value = cfg.CacheDropPick or {},
+			Multi = true,
+			Flag = "Sigma_CacheDropPick",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.CacheDropPick = v
+				if Fish and Fish.setCacheDropPick then Fish.setCacheDropPick(v) end
+			end,
+		})
+
+		autoCacheDropToggle = FishTab:Toggle({
+			Title = "Auto Drop Selected",
+			Value = cfg.AutoCacheDrop == true,
+			Default = false,
+			Flag = "Sigma_AutoCacheDrop",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoCacheDrop = v == true
+				if Fish and Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(v) end
+				notify(hub, "Auto Drop Cache", v and "ON" or "OFF", "package-minus", 2)
+			end,
+		})
+
+		autoUseConsumablesToggle = FishTab:Toggle({
+			Title = "Auto Use Drinks (+)",
+			Value = cfg.AutoUseConsumables ~= false,
+			Default = true,
+			Flag = "Sigma_AutoUseConsumables",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoUseConsumables = v ~= false
+				if Fish and Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(v) end
+				notify(hub, "Auto Use Drinks", v and "ON" or "OFF", "cup-soda", 2)
+			end,
+		})
+
+		FishTab:Button({
+			Title = "Drop Selected Now",
+			Icon = "package-minus",
+			Color = PRIMARY,
+			Callback = function()
+				if not Fish or not Fish.dropCacheSelected then
+					notify(hub, "Drop Cache", "Backend not loaded", "triangle-alert")
+					return
+				end
+				local ok = Fish.dropCacheSelected()
+				notify(hub, "Drop Cache", ok and "Dropped" or "Nothing to drop", "package-minus", 2)
 			end,
 		})
 
@@ -854,6 +954,12 @@ function SigmaUI.build(hub, Fish, opts)
 		if rejoinWhitelistInput and rejoinWhitelistInput.Value ~= nil then
 			c.RejoinWhitelist = tostring(rejoinWhitelistInput.Value or "")
 		end
+		if cacheUseDropdown and cacheUseDropdown.Value ~= nil then c.CacheUsePick = cacheUseDropdown.Value end
+		if cacheDropDropdown and cacheDropDropdown.Value ~= nil then c.CacheDropPick = cacheDropDropdown.Value end
+		if autoCacheDropToggle and autoCacheDropToggle.Value ~= nil then c.AutoCacheDrop = autoCacheDropToggle.Value == true end
+		if autoUseConsumablesToggle and autoUseConsumablesToggle.Value ~= nil then
+			c.AutoUseConsumables = autoUseConsumablesToggle.Value ~= false
+		end
 		getgenv().SigmaFishConfig = c
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
@@ -872,6 +978,10 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setSkillHoldSec then Fish.setSkillHoldSec(c.SkillHoldSec) end
 		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
 		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
+		if Fish.setCacheUsePick then Fish.setCacheUsePick(c.CacheUsePick) end
+		if Fish.setCacheDropPick then Fish.setCacheDropPick(c.CacheDropPick) end
+		if Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(c.AutoCacheDrop == true) end
+		if Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(c.AutoUseConsumables ~= false) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		applyUiHideName()
 		uiLog(opts, "Config synced from UI toggles")
