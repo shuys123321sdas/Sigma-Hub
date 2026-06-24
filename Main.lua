@@ -60,7 +60,7 @@ end
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
-	lastSolveAt = 0, miniTotal = nil,
+	lastSolveAt = 0, miniTotal = nil, cooking = false,
 }
 
 QUEST = {
@@ -317,6 +317,16 @@ function keepForQuest(name)
 	if objNeed(name) then return true end
 	local low = string.lower(name)
 	return string.find(low, "medium", 1, true) or string.find(low, "large", 1, true)
+end
+
+function countSellable()
+	local n = 0
+	for _, t in ipairs(scanFish()) do
+		if not keepForQuest(t.Name) then
+			n += 1
+		end
+	end
+	return n
 end
 
 function objNeed(fishName)
@@ -918,6 +928,7 @@ function remoteSell()
 	return merchantExec(cooker, "SellFish", {})
 end
 function cookAndSell(force)
+	if STATE.cooking then return false end
 	if not force then
 		if not FISH.AUTO_SELL then return false end
 		if countSellable() < FISH.SELL_AT then return false end
@@ -925,21 +936,22 @@ function cookAndSell(force)
 	end
 	if countSellable() < 1 and not force then return false end
 
-	STATE.pause = true
-	local stashed = stashQuestFish()
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then pcall(function() hum:UnequipTools() end) end
-	task.wait(0.1)
-
-	remoteCook()
-	task.wait(0.35)
-	remoteSell()
-
-	STATE.lastSell = os.clock()
-	restoreFish(stashed)
-	equipBestRod()
+	STATE.cooking = true
+	local ok = pcall(function()
+		local stashed = stashQuestFish()
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then pcall(function() hum:UnequipTools() end) end
+		task.wait(0.1)
+		remoteCook()
+		task.wait(0.35)
+		remoteSell()
+		restoreFish(stashed)
+		equipBestRod()
+	end)
+	STATE.cooking = false
 	STATE.pause = false
-	return true
+	if ok then STATE.lastSell = os.clock() end
+	return ok
 end
 
 function castLoop()
@@ -947,7 +959,7 @@ function castLoop()
 	STATE.loopRunning = true
 	task.spawn(function()
 		while isActive() and fishAllowed() do
-			if STATE.pause then
+			if STATE.cooking then
 				task.wait(0.15)
 			elseif miniOpen() then
 				if not STATE.solving then solveMini() end
@@ -981,8 +993,8 @@ function fishStep()
 	if not fishAllowed() then return end
 	hookListeners()
 	if not findRod() then castLoop() return end
-	if not STATE.pause and not lineOut() and not miniOpen() then
-		cookAndSell(false)
+	if not STATE.cooking and not lineOut() and not miniOpen() then
+		task.spawn(function() cookAndSell(false) end)
 	end
 	castLoop()
 end
@@ -1026,7 +1038,6 @@ function syncCfg()
 		and QUEST.SEL ~= FISH.Q_CHALLENGE then
 		QUEST.SEL = FISH.Q_FISHERMAN
 	end
-	-- Fisherman = auto câu + làm hết chuỗi quest (Super Rod)
 	if QUEST.ON and QUEST.SEL == FISH.Q_FISHERMAN then
 		FISH.ON = true
 	else
@@ -1034,7 +1045,21 @@ function syncCfg()
 	end
 	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
 	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
-	STATE.pause = not FISH.ON
+	if not STATE.cooking then
+		STATE.pause = false
+	end
+end
+
+function ensureLoopRunning()
+	syncCfg()
+	if not hubRunning() then
+		stopLoop()
+		return
+	end
+	if getgenv().__SIGMA_FISH_RUNNING then
+		return
+	end
+	startLoop()
 end
 
 function hubTick()
@@ -1070,10 +1095,11 @@ end
 SigmaFish = {}
 
 function SigmaFish.setAutoFish(on)
-	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-	getgenv().SigmaFishConfig.AutoFish = on == true
-	syncCfg()
-	if on then startLoop() elseif not QUEST.ON then stopLoop() end
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoFish = on == true
+	getgenv().SigmaFishConfig = cfg
+	STATE.pause = false
+	ensureLoopRunning()
 end
 
 function SigmaFish.setAutoQuest(on)
@@ -1086,8 +1112,9 @@ function SigmaFish.setAutoQuest(on)
 		cfg.AutoFish = false
 	end
 	getgenv().SigmaFishConfig = cfg
-	syncCfg()
-	if on or FISH.ON then startLoop() else stopLoop() end
+	STATE.pause = false
+	STATE.cooking = false
+	ensureLoopRunning()
 end
 
 function SigmaFish.setQuestSelect(name)
@@ -1099,9 +1126,25 @@ function SigmaFish.setQuestSelect(name)
 end
 
 function SigmaFish.setAutoCookSell(on)
-	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-	getgenv().SigmaFishConfig.AutoCookSell = on == true
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoCookSell = on == true
+	getgenv().SigmaFishConfig = cfg
+	STATE.cooking = false
+	STATE.pause = false
 	syncCfg()
+	ensureLoopRunning()
+end
+
+function SigmaFish.applyConfig()
+	local cfg = getgenv().SigmaFishConfig or {}
+	if cfg.AutoQuest then
+		cfg.AutoFish = true
+		cfg.QuestSelect = FISH.Q_FISHERMAN
+	end
+	getgenv().SigmaFishConfig = cfg
+	STATE.cooking = false
+	STATE.pause = false
+	ensureLoopRunning()
 end
 
 function SigmaFish.setSellAt(n)
@@ -1147,8 +1190,26 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 	getgenv().SigmaFishConfig.AutoFish = false
 	getgenv().SigmaFishConfig.AutoQuest = false
+	STATE.cooking = false
+	STATE.pause = false
 	syncCfg()
 	stopLoop()
+end
+
+-- Reset loop khi reload Main.lua (tránh loop cũ chặn startLoop)
+getgenv().__SIGMA_FISH_RUNNING = false
+getgenv().__SIGMA_FISH_RUN_ID = nil
+
+do
+	local cfg = getgenv().SigmaFishConfig
+	if type(cfg) ~= "table" then
+		cfg = {}
+		getgenv().SigmaFishConfig = cfg
+	end
+	if cfg.AutoCookSell == nil then cfg.AutoCookSell = true end
+	if cfg.SellAt == nil then cfg.SellAt = 40 end
+	if cfg.QuestSelect == nil then cfg.QuestSelect = FISH.Q_FISHERMAN end
+	syncCfg()
 end
 
 getgenv().SigmaFish = SigmaFish
