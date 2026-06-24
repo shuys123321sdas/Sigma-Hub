@@ -11699,11 +11699,24 @@ type ConfigType__DARKLUA_TYPE_a={
     
     
     
+    local function hasTabContent()
+    for aC,aD in next,ar.UIElements.ContainerFrame:GetChildren()do
+    if aD~=b then
+    return true
+    end
+    end
+    return false
+    end
+    
+    if hasTabContent()then
+    b.Visible=false
+    else
     local d
     d=ak.AddSignal(ar.UIElements.ContainerFrame.ChildAdded,function()
     b.Visible=false
     d:Disconnect()
     end)
+    end
     end)
     
     return ar
