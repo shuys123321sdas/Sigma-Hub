@@ -16,6 +16,7 @@ GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
 VirtualInputManager = game:GetService("VirtualInputManager")
 TeleportService = game:GetService("TeleportService")
+RunService = game:GetService("RunService")
 player = Players.LocalPlayer
 
 UNC = {
@@ -79,6 +80,7 @@ STATE = {
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
 	collectSweep = nil, spawnAt = 0,
 	hakiFastRunning = false,
+	hakiLastStack = nil,
 }
 
 QUEST = {
@@ -126,8 +128,9 @@ HAKI = {
 	FAST = false,
 	FULL_RATIO = 0.995,
 	EMPTY_RATIO = 0.03,
+	FAST_EMPTY = 0.01,
 	FAST_CD = 10,
-	STOP_LEVEL = 1001,
+	STOP_LEVEL = 0,
 	MIN_MOB_LEVEL = 150,
 	MIN_Y = 210.6,
 	CLUSTER_RADIUS = 90,
@@ -136,6 +139,41 @@ HAKI = {
 	SKILL_RETRY = 1.2,
 	DEBUG_INTERVAL = 4,
 	_logAt = {},
+}
+
+BRING = {
+	RADIUS = 120,
+	MAX = 12,
+	STACK_Y = 0.12,
+	MODE = "front",
+	FRONT_DIST = 1.2,
+	FRONT_PUSH = 0.8,
+	FRONT_SPREAD = 1.6,
+	FRONT_UP = 0,
+	PLAYER_PUSH = 0.5,
+	JITTER = 0.12,
+	UNDER_Y = -3.5,
+	HEAD_Y = 4.0,
+	HOLD = true,
+	HOLD_ANCHOR = true,
+	HOLD_NOCLIP = false,
+	MOB_HOLD = true,
+	MOB_ANCHOR = true,
+	MOB_SOFT = false,
+	CLUSTER_RADIUS = 100,
+	CLUSTER_TP_Y = 3,
+	CLUSTER_CENTER_Y = 3,
+	CLUSTER_TP_WAIT = 0.15,
+	CLUSTER_STACK_WAIT = 0.2,
+	CLUSTER_STACK_DIST = 5,
+	NEAR_PULL = true,
+	NEAR_PULL_IV = 0.35,
+	holdCF = nil,
+	holdActive = false,
+	savedCol = {},
+	mobHolds = {},
+	nearBatch = {},
+	nearFarmOpts = nil,
 }
 
 RAYLEIGH = {
@@ -2362,12 +2400,13 @@ function hakiDiagSnapshot()
 	local d = getData()
 	local ratio, amount, cap = readHakiBar()
 	return string.format(
-		"ken=%s buso=%s fast=%s ray=%s | hubRun=%s world=%s active=%s | obsUnlocked=%s busoUnlocked=%s | obsAttr=%s hakiAttr=%s | bar=%s (%s/%s) | keyObs=%s keyBuso=%s | quest=%s",
+		"ken=%s buso=%s fast=%s ray=%s | hubRun=%s world=%s active=%s | obsUnlocked=%s busoUnlocked=%s | obsAttr=%s hakiAttr=%s | bar=%s (%s/%s) hakiLv=%s stop=%s | keyObs=%s keyBuso=%s | quest=%s",
 		tostring(HAKI.AUTO_KEN), tostring(HAKI.AUTO_BUSO), tostring(HAKI.FAST), tostring(RAYLEIGH.ON),
 		tostring(hubRunning()), tostring(worldReady()), tostring(isActive()),
 		tostring(hakiAbilityUnlocked("Observation")), tostring(hakiAbilityUnlocked("Haki")),
 		tostring(char and char:GetAttribute("Observation")), tostring(char and char:GetAttribute("Haki")),
 		tostring(ratio and math.floor(ratio * 100) or "nil"), tostring(amount or "?"), tostring(cap or "?"),
+		tostring(statLevel("Haki")), tostring(hakiStopLevel()),
 		tostring(getHakiActionKey("Observation")), tostring(getHakiActionKey("Haki")),
 		tostring(d and d.Quests and d.Quests.Active or "no-data")
 	)
@@ -2479,7 +2518,7 @@ function syncCfg()
 	RAYLEIGH.ON = cfg.AutoRayleigh == true
 	if not HAKI.FAST then
 		STATE.hakiFastRunning = false
-		STATE.hakiHoldMob = nil
+		if hakiReleaseFarm then hakiReleaseFarm() end
 	end
 	if not RAYLEIGH.ON then
 		RAYLEIGH._meditateTrack = nil
@@ -2727,9 +2766,33 @@ function readHakiBar()
 	return nil, nil, cap
 end
 
+function hakiStopLevel()
+	local cfg = getgenv().SigmaFishConfig or {}
+	local stop = tonumber(cfg.HakiStopLevel)
+	if stop == nil then stop = HAKI.STOP_LEVEL end
+	return stop
+end
+
+function hakiFarmStoppedByLevel()
+	local stop = hakiStopLevel()
+	if not stop or stop <= 0 then return false end
+	return statLevel("Haki") >= stop
+end
+
+function sampleAliveMobNames(limit)
+	limit = limit or 6
+	local names = {}
+	for _, mob in ipairs(getAliveEnemies()) do
+		if #names >= limit then break end
+		names[#names + 1] = mob.Name
+	end
+	return #names > 0 and table.concat(names, ", ") or "(none)"
+end
+
 function isCaveDemonForHaki(mob)
 	local n = normMob(mob.Name)
 	if string.find(n, "cave", 1, true) and string.find(n, "demon", 1, true) then
+		if string.find(n, "weakened", 1, true) then return true end
 		local lv = mobLevelFromName(mob.Name)
 		if lv and lv < HAKI.MIN_MOB_LEVEL then return false end
 		return true
@@ -2786,45 +2849,463 @@ function findCaveDemonClusterTarget()
 	return best
 end
 
-function tpHakiNearMob(mob)
+function BRING.zeroVel(part)
+	if not part then return end
+	pcall(function()
+		part.AssemblyLinearVelocity = Vector3.zero
+		part.AssemblyAngularVelocity = Vector3.zero
+	end)
+end
+
+function BRING._restoreNoclip()
+	for part, was in pairs(BRING.savedCol) do
+		if part and part.Parent then pcall(function() part.CanCollide = was end) end
+	end
+	BRING.savedCol = {}
+end
+
+function BRING._applyNoclip(on)
+	local char = player.Character
+	if not char then return end
+	if not on then BRING._restoreNoclip(); return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and BRING.savedCol[p] == nil then
+			BRING.savedCol[p] = p.CanCollide
+			pcall(function() p.CanCollide = false end)
+		end
+	end
+end
+
+function BRING.releaseMobHold(mob)
+	local entry = BRING.mobHolds[mob]
+	if not entry then return end
+	BRING.mobHolds[mob] = nil
+	local part = entry.part
+	if part and part.Parent then pcall(function() part.Anchored = false end) end
+	local hum = mob:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum.PlatformStand = false; hum.AutoRotate = true end) end
+end
+
+function BRING.releaseAllMobHolds()
+	for mob in pairs(BRING.mobHolds) do BRING.releaseMobHold(mob) end
+	BRING.mobHolds = {}
+end
+
+function BRING.releaseHold()
+	BRING.holdActive = false
+	BRING.holdCF = nil
+	BRING.releaseAllMobHolds()
 	local hrp = getHRP()
-	local mobRoot = mob and (mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true))
-	local pos = mobRoot and mobRoot.Position or getPos(mob)
-	if not hrp or not pos then return false end
+	if hrp then pcall(function() hrp.Anchored = false end) end
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then pcall(function() hum:UnequipTools() end) end
-	local facing = mobRoot and mobRoot.CFrame.LookVector or Vector3.new(0, 0, 1)
-	facing = Vector3.new(facing.X, 0, facing.Z)
-	if facing.Magnitude < 0.1 then facing = Vector3.new(0, 0, 1) else facing = facing.Unit end
-	local stand = pos + facing * 2 + Vector3.new(0, 1, 0)
-	if stand.Y < HAKI.MIN_Y then stand = Vector3.new(stand.X, HAKI.MIN_Y, stand.Z) end
-	pcall(function() hrp.CFrame = CFrame.new(stand, Vector3.new(pos.X, stand.Y, pos.Z)) end)
-	zeroHRPVel(hrp)
+	if hum then pcall(function() hum.AutoRotate = true; hum.PlatformStand = false end) end
+	if BRING.HOLD_NOCLIP then BRING._applyNoclip(false) end
+end
+
+function BRING.clusterAtHead(anchorPos, index)
+	local center = anchorPos + Vector3.new(0, BRING.HEAD_Y + (index - 1) * BRING.STACK_Y, 0)
+	if BRING.JITTER > 0 then
+		local a = index * 2.399963
+		local r = BRING.JITTER * (0.3 + (index % 4) * 0.15)
+		center = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+	end
+	return CFrame.new(center)
+end
+
+function BRING.clusterAtFront(hrp, index)
+	local pull = math.max(0.4, BRING.FRONT_DIST - BRING.FRONT_PUSH)
+	local spread = (index - 1) * 0.42
+	local xOff = math.sin(spread) * BRING.FRONT_SPREAD * 0.45
+	local zOff = -(pull + math.cos(spread) * 0.15)
+	local center = (hrp.CFrame * CFrame.new(xOff, BRING.FRONT_UP + (index - 1) * BRING.STACK_Y, zOff)).Position
+	if BRING.JITTER > 0 then
+		local a = index * 2.399963
+		local r = BRING.JITTER * (0.25 + (index % 3) * 0.12)
+		center = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+	end
+	return CFrame.new(center, hrp.Position)
+end
+
+function BRING.clusterCF(hrp, index)
+	if BRING.MODE == "head" then return BRING.clusterAtHead(hrp.Position, index) end
+	return BRING.clusterAtFront(hrp, index)
+end
+
+function BRING.mobRoot(mob)
+	if not mob then return nil end
+	return mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
+end
+
+function BRING.applyMobHold(mob)
+	local entry = BRING.mobHolds[mob]
+	if not entry then return end
+	if not mob.Parent then BRING.releaseMobHold(mob); return end
+	local hum = mob:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then BRING.releaseMobHold(mob); return end
+	local hrp = getHRP()
+	local part = entry.part
+	if not hrp or not part or not part.Parent then return end
+	local cf = BRING.clusterCF(hrp, entry.index)
+	pcall(function()
+		if mob.PrimaryPart then mob:SetPrimaryPartCFrame(cf) else part.CFrame = cf end
+	end)
+	if not BRING.MOB_SOFT then BRING.zeroVel(part) end
+	if BRING.MOB_ANCHOR then pcall(function() part.Anchored = true end) end
+	if not BRING.MOB_SOFT then
+		pcall(function() hum.AutoRotate = false; hum.WalkSpeed = 0; hum.PlatformStand = true end)
+	end
+end
+
+function BRING.registerMobHold(mob, index)
+	if not BRING.MOB_HOLD or not mob or not index then return end
+	local part = BRING.mobRoot(mob)
+	if not part then return end
+	BRING.mobHolds[mob] = { index = index, part = part }
+	BRING.applyMobHold(mob)
+	BRING.ensureHoldLoop()
+end
+
+BRING.tickMobHolds = LPH_NO_VIRTUALIZE(function()
+	if not next(BRING.mobHolds) then return end
+	local kept = {}
+	for mob in pairs(BRING.mobHolds) do
+		if mob.Parent then
+			local hum = mob:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				BRING.applyMobHold(mob)
+				kept[mob] = true
+			end
+		end
+		if not kept[mob] then BRING.releaseMobHold(mob) end
+	end
+end)
+
+function BRING.setHold(cf)
+	if not cf or not BRING.HOLD then BRING.releaseHold(); return end
+	BRING.holdCF = cf
+	BRING.holdActive = true
+	local hrp = getHRP()
+	if not hrp then return end
+	pcall(function() hrp.CFrame = cf end)
+	BRING.zeroVel(hrp)
+	if BRING.HOLD_ANCHOR then pcall(function() hrp.Anchored = true end) end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum.AutoRotate = false; hum.PlatformStand = false end) end
+	if BRING.HOLD_NOCLIP then BRING._applyNoclip(true) end
+	BRING.ensureHoldLoop()
+end
+
+BRING.tickHold = LPH_NO_VIRTUALIZE(function()
+	if not BRING.holdActive or not BRING.holdCF then return end
+	local hrp = getHRP()
+	if not hrp then return end
+	pcall(function() hrp.CFrame = BRING.holdCF end)
+	BRING.zeroVel(hrp)
+	if BRING.HOLD_ANCHOR then pcall(function() hrp.Anchored = true end)
+	else pcall(function() hrp.Anchored = false end) end
+end)
+
+function BRING.ensureHoldLoop()
+	if getgenv().__SIGMA_BRING_HOLD_CONN then return end
+	getgenv().__SIGMA_BRING_HOLD_CONN = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function()
+		if not isActive() or not HAKI.FAST then
+			if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
+			return
+		end
+		if BRING.holdActive then BRING.tickHold() end
+		if next(BRING.mobHolds) then BRING.tickMobHolds() end
+	end))
+end
+
+function BRING.tpNearMob(model)
+	local hrp = getHRP()
+	local mobRoot = model and BRING.mobRoot(model)
+	local pos = mobRoot and mobRoot.Position or getPos(model)
+	if not hrp or not pos then return false end
+	local cf
+	if BRING.MODE == "head" then
+		local y = pos.Y + BRING.UNDER_Y
+		if y <= 209.5 then y = HAKI.MIN_Y end
+		cf = CFrame.new(Vector3.new(pos.X, y, pos.Z), pos)
+	else
+		local facing = mobRoot and mobRoot.CFrame.LookVector or Vector3.new(0, 0, 1)
+		facing = Vector3.new(facing.X, 0, facing.Z)
+		if facing.Magnitude < 0.1 then facing = Vector3.new(0, 0, 1) else facing = facing.Unit end
+		local standDist = math.max(0.3, BRING.FRONT_DIST - BRING.PLAYER_PUSH)
+		local standPos = pos + facing * standDist + Vector3.new(0, BRING.FRONT_UP, 0)
+		if standPos.Y <= 209.5 then standPos = Vector3.new(standPos.X, HAKI.MIN_Y, standPos.Z) end
+		cf = CFrame.new(standPos, Vector3.new(pos.X, standPos.Y, pos.Z))
+	end
+	pcall(function() hrp.CFrame = cf end)
+	BRING.zeroVel(hrp)
+	BRING.setHold(cf)
 	return true
 end
 
-function tpUnderMob(mob)
-	return tpHakiNearMob(mob)
+function BRING.tpUnderMob(model)
+	return BRING.tpNearMob(model)
 end
 
-function hakiGoToFarmSpot(forceTp)
-	local now = os.clock()
-	if not forceTp and (now - (STATE.hakiLastTp or 0)) < HAKI.TP_INTERVAL then return STATE.hakiHoldMob end
+function BRING.moveMob(mob, targetCF, index)
+	local part = BRING.mobRoot(mob)
+	if not part then return false end
+	local ok = pcall(function()
+		if mob.PrimaryPart then mob:SetPrimaryPartCFrame(targetCF) else part.CFrame = targetCF end
+	end)
+	if not ok then pcall(function() part.CFrame = targetCF end) end
+	if not BRING.MOB_SOFT then BRING.zeroVel(part) end
+	if index then BRING.registerMobHold(mob, index) end
+	return true
+end
+
+function BRING.xzDistance(a, b)
+	local dx, dz = a.X - b.X, a.Z - b.Z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+function BRING.mobPassesNearFilter(mob, opts)
+	opts = opts or {}
+	if opts.haki and not isCaveDemonForHaki(mob) then return false end
+	if opts.filter and not opts.filter(mob) then return false end
+	return true
+end
+
+function BRING.stopNearPull()
+	getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = false
+	BRING.nearFarmOpts = nil
+end
+
+function BRING.startNearPull(opts)
+	if not BRING.NEAR_PULL then return end
+	getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = true
+	BRING.nearFarmOpts = opts
+	BRING.ensureNearPullLoop()
+end
+
+function BRING.pullMobsInRadius(opts)
+	opts = opts or BRING.nearFarmOpts
+	if not opts then return 0 end
+	local hrp = getHRP()
+	local alive = getAliveRoot()
+	if not hrp or not alive then return 0 end
+	local radius = opts.radius or BRING.CLUSTER_RADIUS
+	local stackPos = hrp.CFrame * CFrame.new(0, 0, -BRING.CLUSTER_STACK_DIST)
+	local held, nextIdx = {}, 0
+	for mob, entry in pairs(BRING.mobHolds) do
+		held[mob] = true
+		if entry and entry.index then nextIdx = math.max(nextIdx, entry.index) end
+	end
+	local added = 0
+	for _, mob in ipairs(alive:GetChildren()) do
+		if not held[mob] and BRING.mobPassesNearFilter(mob, opts) then
+			local root = mob:FindFirstChild("HumanoidRootPart")
+			local hum = mob:FindFirstChildOfClass("Humanoid")
+			if root and hum and hum.Health > 0
+				and BRING.xzDistance(root.Position, hrp.Position) <= radius then
+				for _, v in ipairs(mob:GetDescendants()) do
+					if v:IsA("BasePart") then
+						pcall(function() v.CanCollide = false; v.Massless = true end)
+					end
+				end
+				pcall(function()
+					root.CFrame = stackPos
+					root.AssemblyLinearVelocity = Vector3.zero
+					root.AssemblyAngularVelocity = Vector3.zero
+				end)
+				nextIdx += 1
+				BRING.registerMobHold(mob, nextIdx)
+				table.insert(BRING.nearBatch, mob)
+				held[mob] = true
+				added += 1
+			end
+		end
+	end
+	return added
+end
+
+function BRING.ensureNearPullLoop()
+	if getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP then return end
+	getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP = true
+	task.spawn(function()
+		while getgenv().__SIGMA_HUB_RUNNING do
+			if getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE and BRING.nearFarmOpts
+				and HAKI.FAST and isActive() then
+				pcall(function() BRING.pullMobsInRadius(BRING.nearFarmOpts) end)
+			end
+			task.wait(BRING.NEAR_PULL_IV)
+		end
+		getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP = false
+		getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = false
+	end)
+end
+
+function BRING.stackClusterNear(seedMob, opts)
+	opts = opts or {}
+	local hrp = getHRP()
+	if not hrp then return 0 end
+	BRING.releaseHold()
+	local seedRoot = seedMob and BRING.mobRoot(seedMob)
+	if seedRoot then
+		pcall(function()
+			hrp.CFrame = CFrame.new(
+				seedRoot.Position.X,
+				seedRoot.Position.Y + BRING.CLUSTER_CENTER_Y,
+				seedRoot.Position.Z
+			)
+		end)
+		BRING.zeroVel(hrp)
+		task.wait(BRING.CLUSTER_TP_WAIT)
+	end
+	local alive = getAliveRoot()
+	if not alive then return 0 end
+	local radius = opts.radius or BRING.CLUSTER_RADIUS
+	local mobs, totalPos, count = {}, Vector3.zero, 0
+	for _, mob in ipairs(alive:GetChildren()) do
+		if BRING.mobPassesNearFilter(mob, opts) then
+			local root = mob:FindFirstChild("HumanoidRootPart")
+			local hum = mob:FindFirstChildOfClass("Humanoid")
+			if root and hum and hum.Health > 0
+				and BRING.xzDistance(root.Position, hrp.Position) <= radius then
+				table.insert(mobs, { mob = mob, root = root })
+				totalPos += root.Position
+				count += 1
+			end
+		end
+	end
+	if count == 0 then
+		if seedMob then BRING.tpUnderMob(seedMob) end
+		return 0
+	end
+	local center = totalPos / count
+	pcall(function()
+		hrp.CFrame = CFrame.new(center.X, center.Y + BRING.CLUSTER_CENTER_Y, center.Z)
+	end)
+	BRING.zeroVel(hrp)
+	BRING.setHold(hrp.CFrame)
+	task.wait(BRING.CLUSTER_STACK_WAIT)
+	local stackPos = hrp.CFrame * CFrame.new(0, 0, -BRING.CLUSTER_STACK_DIST)
+	BRING.nearBatch = {}
+	for i, data in ipairs(mobs) do
+		local mob, root = data.mob, data.root
+		for _, v in ipairs(mob:GetDescendants()) do
+			if v:IsA("BasePart") then
+				pcall(function() v.CanCollide = false; v.Massless = true end)
+			end
+		end
+		pcall(function()
+			root.CFrame = stackPos
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+		end)
+		BRING.registerMobHold(mob, i)
+		table.insert(BRING.nearBatch, mob)
+	end
+	return count
+end
+
+function BRING.run(opts)
+	opts = opts or {}
+	local hrp = getHRP()
+	if not hrp then return 0 end
+	local list = {}
+	for _, mob in ipairs(getAliveEnemies()) do
+		if opts.haki then
+			if isCaveDemonForHaki(mob) then
+				local m = BRING.mobRoot(mob)
+				if m then
+					local d = (hrp.Position - m.Position).Magnitude
+					if d <= BRING.RADIUS then table.insert(list, { mob = mob, dist = d }) end
+				end
+			end
+		else
+			local m = BRING.mobRoot(mob)
+			if m then
+				local d = (hrp.Position - m.Position).Magnitude
+				if d <= BRING.RADIUS then table.insert(list, { mob = mob, dist = d }) end
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+	local n = math.min(#list, BRING.MAX)
+	local kept = {}
+	if not opts.haki then BRING.nearBatch = {} end
+	for i = 1, n do
+		kept[list[i].mob] = true
+		if not opts.haki then table.insert(BRING.nearBatch, list[i].mob) end
+		BRING.moveMob(list[i].mob, BRING.clusterCF(hrp, i), i)
+	end
+	for mob in pairs(BRING.mobHolds) do
+		if not kept[mob] then BRING.releaseMobHold(mob) end
+	end
+	return n
+end
+
+function hakiBringOpts()
+	return { haki = true, radius = BRING.CLUSTER_RADIUS }
+end
+
+function hakiReleaseFarm()
+	BRING.releaseHold()
+	BRING.stopNearPull()
+	STATE.hakiHoldMob = nil
+	STATE.hakiLastStack = nil
+end
+
+function hakiEnsureTarget()
 	local target = STATE.hakiHoldMob
 	local hum = target and target:FindFirstChildOfClass("Humanoid")
 	if not target or not hum or hum.Health <= 0 then
 		target = findCaveDemonClusterTarget()
 		STATE.hakiHoldMob = target
+		STATE.hakiLastStack = nil
 	end
+	return target
+end
+
+function hakiFarmBringTarget(target, stackNow)
+	if not target then return nil, 0 end
+	local now = os.clock()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then pcall(function() hum:UnequipTools() end) end
+	local brought = 0
+	if stackNow or not STATE.hakiLastStack or (now - STATE.hakiLastStack) >= 8 then
+		local n = BRING.stackClusterNear(target, hakiBringOpts())
+		STATE.hakiLastStack = now
+		local holds = 0
+		for _ in pairs(BRING.mobHolds) do holds += 1 end
+		hakiLog("fast:stack", string.format(
+			"stacked %d mobs @ %s | anchor=%s holds=%d",
+			n, target.Name, tostring(BRING.holdActive), holds
+		), 3)
+	elseif not BRING.holdActive then
+		BRING.tpUnderMob(target)
+	end
+	BRING.startNearPull(hakiBringOpts())
+	brought = BRING.run({ haki = true })
+	if BRING.NEAR_PULL then BRING.pullMobsInRadius(hakiBringOpts()) end
+	return target, brought
+end
+
+function tpHakiNearMob(mob)
+	return BRING.tpUnderMob(mob)
+end
+
+function tpUnderMob(mob)
+	return BRING.tpUnderMob(mob)
+end
+
+function hakiGoToFarmSpot(forceTp)
+	local now = os.clock()
+	if not forceTp and (now - (STATE.hakiLastTp or 0)) < HAKI.TP_INTERVAL then return STATE.hakiHoldMob end
+	local target = hakiEnsureTarget()
 	if target then
-		local hrp = getHRP()
-		local mobPos = getPos(target)
-		local dist = (hrp and mobPos) and (hrp.Position - mobPos).Magnitude or math.huge
-		if forceTp or dist >= HAKI.HOLD_RETP_DIST then
-			tpHakiNearMob(target)
-		end
+		local stackNow = forceTp or not BRING.holdActive or not STATE.hakiLastStack
+		hakiFarmBringTarget(target, stackNow)
 	else
-		hakiLog("fast:nomob", string.format("no farm mob Lv%d+ (Alive=%d)", HAKI.MIN_MOB_LEVEL, #getAliveEnemies()), 5)
+		hakiLog("fast:nomob", string.format(
+			"no farm mob Lv%d+ | Alive=%d | nearby: %s",
+			HAKI.MIN_MOB_LEVEL, #getAliveEnemies(), sampleAliveMobNames(8)
+		), 5)
 	end
 	STATE.hakiLastTp = now
 	return target
@@ -2837,8 +3318,8 @@ function tryHakiRejoin()
 	STATE.hakiFastPending = true
 	STATE.hakiLastRejoin = now
 	STATE.hakiFastRunning = false
-	STATE.hakiHoldMob = nil
-	pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
+	hakiReleaseFarm()
+	pcall(function() TeleportService:Teleport(game.PlaceId) end)
 	return true
 end
 
@@ -2910,6 +3391,7 @@ end
 
 function stepFastHaki()
 	if not HAKI.FAST then
+		if BRING.holdActive or next(BRING.mobHolds) then hakiReleaseFarm() end
 		STATE.hakiFastRunning = false
 		return false
 	end
@@ -2917,8 +3399,9 @@ function stepFastHaki()
 		hakiLog("fast:block", "Fast Haki — isActive=false", 6)
 		return false
 	end
-	if statLevel("Haki") >= HAKI.STOP_LEVEL then
-		hakiLog("fast:max", "Haki level at stop threshold", 15)
+	if hakiFarmStoppedByLevel() then
+		local lv, stop = statLevel("Haki"), hakiStopLevel()
+		hakiLog("fast:max", string.format("Haki Lv %d >= stop %d (set HakiStopLevel=0 to disable)", lv, stop), 15)
 		return false
 	end
 	if not hakiAbilityUnlocked("Haki") then
@@ -2931,18 +3414,32 @@ function stepFastHaki()
 		return false
 	end
 	local pct = math.floor(ratio * 100 + 0.5)
+	local target = hakiEnsureTarget()
+	if not target then
+		hakiLog("fast:nomob", string.format(
+			"no Cave Demon Lv%d+ | Alive=%d | nearby: %s",
+			HAKI.MIN_MOB_LEVEL, #getAliveEnemies(), sampleAliveMobNames(8)
+		), 5)
+		return false
+	end
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
-		local mob = hakiGoToFarmSpot(true)
-		hakiLog("fast:full", string.format("bar full %d%% (%d/%d) -> TP mob=%s", pct, amount or 0, cap or 0, tostring(mob and mob.Name)), 3)
+		local _, brought = hakiFarmBringTarget(target, not BRING.holdActive)
+		hakiLog("fast:full", string.format(
+			"bar full %d%% (%d/%d) | bring=%d anchor=%s mob=%s",
+			pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive), target.Name
+		), 3)
 		return true
 	end
-	if STATE.hakiFastRunning and ratio <= HAKI.EMPTY_RATIO then
-		hakiLog("fast:rejoin", string.format("bar empty %d%% -> rejoin", pct), 3)
+	if STATE.hakiFastRunning and ratio <= HAKI.FAST_EMPTY then
+		hakiLog("fast:rejoin", string.format("bar <= %d%% (%d/%d) -> Teleport rejoin", pct, amount or 0, cap or 0), 2)
 		return tryHakiRejoin()
 	end
-	local mob = hakiGoToFarmSpot(true)
-	hakiLog("fast:fill", string.format("fill bar %d%% (%d/%d) -> TP mob=%s", pct, amount or 0, cap or 0, tostring(mob and mob.Name)), 4)
+	local _, brought = hakiFarmBringTarget(target, not BRING.holdActive or not STATE.hakiLastStack)
+	hakiLog("fast:fill", string.format(
+		"fill bar %d%% (%d/%d) | stack+bring=%d anchor=%s mob=%s",
+		pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive), target.Name
+	), 4)
 	return true
 end
 
@@ -3365,8 +3862,8 @@ function SigmaFish.setFastHaki(on)
 	getgenv().SigmaFishConfig = cfg
 	HAKI.FAST = cfg.FastHaki
 	if not HAKI.FAST then
+		if hakiReleaseFarm then hakiReleaseFarm() end
 		STATE.hakiFastRunning = false
-		STATE.hakiHoldMob = nil
 	else
 		print("[Sigma Haki] Fast Haki ON")
 		print("[Sigma Haki]", hakiDiagSnapshot())
