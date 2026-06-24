@@ -80,6 +80,23 @@ if UNC.mobile then
 	FISH.MINI_READY = 0.65
 	FISH.MINI_DEBOUNCE = 0.5
 end
+
+CACHE = {
+	KEYS = { "Copper", "Silver", "Gold", "Platinum", "Compass" },
+	NAMES = {
+		Copper = { "Copper" },
+		Silver = { "Silver" },
+		Gold = { "Gold" },
+		Platinum = { "Platinum" },
+		Compass = { "Compass", "Starter Compass" },
+	},
+	AUTO_CONSUME = true,
+	AUTO_DROP = false,
+	USE_CLICKS = 3,
+	DROP_WAIT = 0.06,
+	TICK = 0.4,
+	_lastTick = 0,
+}
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
@@ -809,30 +826,8 @@ end
 
 function stepCompassDrop()
 	if not COMPASS.DROP_ON then return false end
-	if samCountCompassTool() < 1 then return false end
-	if not samActionReady("drop", 3) then return false end
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local hrp = getHRP()
-	if not hum or not hrp then return false end
-	if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
-	pcall(function() hrp.CFrame = CFrame.new(SAM.COMPASS_POS) end)
-	task.wait(SAM.DROP_WAIT)
-	local startCount = samCountCompassTool()
-	local deadline = os.clock() + SAM.DROP_TIMEOUT
-	while isActive() and os.clock() < deadline and samCountCompassTool() > 0 do
-		local tool = samNextCompassTool()
-		if not tool then break end
-		if tool.Parent ~= char then
-			pcall(function() hum:EquipTool(tool) end)
-			task.wait(0.08)
-		end
-		if tool.Parent == char and tool.CanBeDropped then
-			pcall(function() tool.Parent = workspace end)
-			task.wait(0.06)
-		end
-	end
-	return samCountCompassTool() < startCount
+	if not samActionReady("drop", 2) then return false end
+	return cacheDropTypes({ "Compass" }, 5)
 end
 
 function compassSendMouse(down)
@@ -2629,6 +2624,198 @@ function collectToolsByName(matchFn)
 	return out
 end
 
+function normalizeCachePick(picked)
+	local out, seen = {}, {}
+	if type(picked) ~= "table" then return out end
+	local function add(raw)
+		local k = tostring(raw or "")
+		k = string.gsub(k, "^%s+", "")
+		k = string.gsub(k, "%s+$", "")
+		if k ~= "" and not seen[k] then
+			for _, key in ipairs(CACHE.KEYS) do
+				if key == k then
+					seen[key] = true
+					out[#out + 1] = key
+					break
+				end
+			end
+		end
+	end
+	for _, v in ipairs(picked) do add(v) end
+	for k, v in pairs(picked) do
+		if type(k) == "string" and v == true then add(k) end
+	end
+	return out
+end
+
+function cacheUsePick()
+	return normalizeCachePick((getgenv().SigmaFishConfig or {}).CacheUsePick)
+end
+
+function cacheDropPick()
+	return normalizeCachePick((getgenv().SigmaFishConfig or {}).CacheDropPick)
+end
+
+function cacheToolIsType(toolName, typeKey)
+	local names = CACHE.NAMES[typeKey]
+	if not names or not toolName then return false end
+	for _, n in ipairs(names) do
+		if toolName == n then return true end
+	end
+	return false
+end
+
+function collectToolsByCacheType(typeKey)
+	local out = {}
+	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if where then
+			for _, c in ipairs(where:GetChildren()) do
+				if c:IsA("Tool") and cacheToolIsType(c.Name, typeKey) then
+					out[#out + 1] = c
+				end
+			end
+		end
+	end
+	return out
+end
+
+function getCacheCounts()
+	local counts = {}
+	for _, key in ipairs(CACHE.KEYS) do counts[key] = 0 end
+	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if where then
+			for _, c in ipairs(where:GetChildren()) do
+				if c:IsA("Tool") then
+					for _, key in ipairs(CACHE.KEYS) do
+						if cacheToolIsType(c.Name, key) then
+							counts[key] += 1
+						end
+					end
+				end
+			end
+		end
+	end
+	return counts
+end
+
+function isFishRodTool(tool)
+	if not tool then return false end
+	for _, r in ipairs(FISH.RODS) do
+		if tool.Name == r then return true end
+	end
+	return string.find(string.lower(tool.Name), "rod", 1, true) ~= nil
+end
+
+function isCacheTypeTool(tool)
+	if not tool or not tool:IsA("Tool") then return false end
+	for _, key in ipairs(CACHE.KEYS) do
+		if cacheToolIsType(tool.Name, key) then return true end
+	end
+	return false
+end
+
+function isMiscConsumableName(name)
+	name = tostring(name or "")
+	if name == "" or name == "Package" then return false end
+	if isGoldenAppleName(name) or isPearName(name) then return true end
+	if string.find(name, "Lemonade", 1, true) then return true end
+	if string.find(name, "+", 1, true) then return true end
+	return false
+end
+
+function isMiscConsumableTool(tool)
+	if not tool or not tool:IsA("Tool") then return false end
+	if isCombatTool(tool) or isGrappleTool(tool) or isFishRodTool(tool) then return false end
+	if isCacheTypeTool(tool) then return false end
+	return isMiscConsumableName(tool.Name)
+end
+
+function dropToolInPlace(tool, hum)
+	if not tool or not hum or not tool.Parent then return false end
+	if tool.Parent ~= player.Character then
+		pcall(function() hum:EquipTool(tool) end)
+		task.wait(CACHE.DROP_WAIT)
+	end
+	if tool.Parent == player.Character and tool.CanBeDropped then
+		pcall(function() tool.Parent = workspace end)
+		task.wait(CACHE.DROP_WAIT)
+		return true
+	end
+	return false
+end
+
+function cacheDropTypes(types, maxPerTick)
+	types = types or {}
+	if #types < 1 then return false end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return false end
+	maxPerTick = maxPerTick or 5
+	local dropped = 0
+	for _, typeKey in ipairs(types) do
+		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
+			if not isActive() then return dropped > 0 end
+			if dropped >= maxPerTick then return true end
+			if dropToolInPlace(tool, hum) then dropped += 1 end
+		end
+	end
+	return dropped > 0
+end
+
+function stepCacheUseSelected()
+	local pick = cacheUsePick()
+	if #pick < 1 then return false end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return false end
+	local used = false
+	for _, typeKey in ipairs(pick) do
+		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
+			if not isActive() then return used end
+			useToolClicks(tool, hum, CACHE.USE_CLICKS)
+			used = true
+		end
+	end
+	return used
+end
+
+function stepCacheDropSelected()
+	if not CACHE.AUTO_DROP then return false end
+	return cacheDropTypes(cacheDropPick(), 5)
+end
+
+function stepMiscConsumables()
+	if not CACHE.AUTO_CONSUME then return false end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return false end
+	local used = false
+	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if where then
+			for _, tool in ipairs(where:GetChildren()) do
+				if isMiscConsumableTool(tool) then
+					if not isActive() then return used end
+					useToolClicks(tool, hum, CACHE.USE_CLICKS)
+					used = true
+				end
+			end
+		end
+	end
+	return used
+end
+
+function cacheModeEnabled()
+	return #cacheUsePick() > 0 or CACHE.AUTO_DROP or CACHE.AUTO_CONSUME
+end
+
+function stepCacheFeatures()
+	if not cacheModeEnabled() then return false end
+	local now = os.clock()
+	if now - (CACHE._lastTick or 0) < CACHE.TICK then return false end
+	CACHE._lastTick = now
+	if stepCacheUseSelected() then return true end
+	if stepCacheDropSelected() then return true end
+	if stepMiscConsumables() then return true end
+	return false
+end
+
 function useGoldenApplesForOldBeggar()
 	if not BEGGAR.AUTO_GOLDEN then return 0 end
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
@@ -3079,6 +3266,7 @@ end
 function hubRunning()
 	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON
 		or SAM.ON or COMPASS.DROP_ON or COMPASS.FIND_ON or SKILL.ON or REJOIN.ON
+		or cacheModeEnabled()
 end
 
 function hakiModeEnabled()
@@ -3225,6 +3413,8 @@ function syncCfg()
 		stopSkillLoop()
 	end
 	REJOIN.ON = cfg.AutoWhitelistRejoin == true
+	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables ~= false
+	CACHE.AUTO_DROP = cfg.AutoCacheDrop == true
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
 	HAKI.FAST = cfg.FastHaki == true
@@ -5138,6 +5328,9 @@ function serviceTick()
 		if ensureSpawn() then return end
 	end
 	dropGrappleTools()
+	if isActive() and worldReady() then
+		stepCacheFeatures()
+	end
 end
 
 function featureTick()
@@ -5479,6 +5672,10 @@ function SigmaFish.applyConfig()
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
 	if cfg.AutoWhitelistRejoin == nil then cfg.AutoWhitelistRejoin = false end
 	if cfg.RejoinWhitelist == nil then cfg.RejoinWhitelist = "" end
+	if cfg.CacheUsePick == nil then cfg.CacheUsePick = {} end
+	if cfg.CacheDropPick == nil then cfg.CacheDropPick = {} end
+	if cfg.AutoCacheDrop == nil then cfg.AutoCacheDrop = false end
+	if cfg.AutoUseConsumables == nil then cfg.AutoUseConsumables = true end
 	getgenv().SigmaFishConfig = cfg
 	QUEST.PICK = cfg.QuestPick
 	local wantAuto = cfg.AutoQuest == true
@@ -5566,6 +5763,44 @@ end
 
 function SigmaFish.cookSell()
 	return cookAndSell(true)
+end
+
+function SigmaFish.getCacheCounts()
+	return getCacheCounts()
+end
+
+function SigmaFish.setCacheUsePick(keys)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.CacheUsePick = keys or {}
+	getgenv().SigmaFishConfig = cfg
+	ensureLoopRunning()
+end
+
+function SigmaFish.setCacheDropPick(keys)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.CacheDropPick = keys or {}
+	getgenv().SigmaFishConfig = cfg
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoCacheDrop(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoCacheDrop = on == true
+	getgenv().SigmaFishConfig = cfg
+	CACHE.AUTO_DROP = cfg.AutoCacheDrop
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoUseConsumables(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoUseConsumables = on ~= false
+	getgenv().SigmaFishConfig = cfg
+	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables
+	ensureLoopRunning()
+end
+
+function SigmaFish.dropCacheSelected()
+	return cacheDropTypes(cacheDropPick(), 50)
 end
 
 function SigmaFish.getHakiStatus()
@@ -5675,6 +5910,10 @@ do
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
 	if cfg.AutoWhitelistRejoin == nil then cfg.AutoWhitelistRejoin = false end
 	if cfg.RejoinWhitelist == nil then cfg.RejoinWhitelist = "" end
+	if cfg.CacheUsePick == nil then cfg.CacheUsePick = {} end
+	if cfg.CacheDropPick == nil then cfg.CacheDropPick = {} end
+	if cfg.AutoCacheDrop == nil then cfg.AutoCacheDrop = false end
+	if cfg.AutoUseConsumables == nil then cfg.AutoUseConsumables = true end
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	syncCfg()
