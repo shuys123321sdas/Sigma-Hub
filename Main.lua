@@ -77,15 +77,19 @@ QUEST = {
 		["Marge Nospmis"] = { quest = "Rescuing the Brat", kind = "talk", talkNPC = "Bart Nospmis", deliver = "Talk to Bart" },
 		["Old Beggar"] = {
 			quest = "Humble Man #1", kind = "collect",
+			collectFolders = { "MapFolder.Fruits", "Barrels.Barrels", "Barrels.Crates" },
 			deliverItems = { "Apple", "Banana", "Cantaloupe", "Coconut", "Green Apple", "Melon", "Pumpkin", "Golden Apple" },
 		},
 		["Mad Scientist"] = { quest = "Race Experiments", kind = "deliver", deliverItems = { "Whitebeard Essence" } },
-		["Explorer"] = { quest = "Adventures", kind = "reachAll", noClaim = true },
+		["Explorer"] = { quest = "Adventures", kind = "reachAll", folder = "Ignore.NPCs.Islands", noClaim = true },
 		["Traceur"] = { quest = "Bridge Challenge", kind = "reach", pos = { -289, 303, -609 } },
 		["Sam"] = { quest = "Help Sam", kind = "sam", mobs = { "thug" } },
 		["Fisherman"] = { quest = "Fisherman's Favor", kind = "carry", carryItem = "Package" },
 		["Gemologist"] = { quest = "Gem Hunter", kind = "reach", target = "Chests.Gemologist" },
 	},
+	COLLECT_BLOCK = { "grapple", "package", "melee", "essence", "compass" },
+	COLLECT_WAIT = 0.12,
+	CARRY_SWEEP_WAIT = 0.35,
 }
 
 function isActive()
@@ -833,38 +837,32 @@ function findPackageReceiver()
 	return nil
 end
 
-function tryRemoteCarryDeliver(model, item)
-	if not model or not hasItem(item) then return false end
-	equipItem(item)
-	questExec(model, "Deliver", item)
-	task.wait(0.08)
-	if questDone() or not hasItem(item) then return true end
-	local q = getQuests()
-	if q and type(q.Objectives) == "table" then
-		for objName in pairs(q.Objectives) do
-			questExec(model, "Deliver", objName)
-			task.wait(0.05)
-			if questDone() or not hasItem(item) then return true end
-		end
+function packageReceiverList()
+	local targets = receiverNPCs()
+	local recv = findPackageReceiver()
+	if not recv then return targets end
+	local out = { { model = recv, name = recv.Name, d = 0 } }
+	for _, t in ipairs(targets) do
+		if t.model ~= recv then out[#out + 1] = t end
 	end
-	setMerchant(model)
-	useTool(player.Character and player.Character:FindFirstChild(item))
-	task.wait(0.1)
-	return questDone() or not hasItem(item)
+	return out
 end
 
 function deliverPackage()
 	if not hasItem("Package") then return false end
-	if os.clock() - (STATE.lastDeliver or 0) < 0.6 then return false end
+	if os.clock() - (STATE.lastDeliver or 0) < 0.5 then return false end
 	STATE.lastDeliver = os.clock()
 	equipItem("Package")
-	local recv = findPackageReceiver()
-	if recv and tryRemoteCarryDeliver(recv, "Package") then return true end
-	local fm = findNPC(FISH.FISHERMAN)
-	if fm and tryRemoteCarryDeliver(fm, "Package") then return true end
-	for _, t in ipairs(receiverNPCs()) do
+	for _, t in ipairs(packageReceiverList()) do
 		if questDone() or not hasItem("Package") then break end
-		if tryRemoteCarryDeliver(t.model, "Package") then return true end
+		local t0 = tick()
+		while tick() - t0 < QUEST.CARRY_SWEEP_WAIT and isActive() do
+			tpFace(t.model, 4, 1)
+			useTool(player.Character and player.Character:FindFirstChild("Package"))
+			task.wait(0.1)
+			if questDone() or not hasItem("Package") then break end
+		end
+		if questDone() or not hasItem("Package") then return true end
 	end
 	return questDone()
 end
@@ -989,11 +987,114 @@ end
 function stepTalkQuest(npc, info)
 	local target = findNPC(info.talkNPC)
 	if not target then return false end
+	tpNear(target)
 	return questExec(target, "Deliver", info.deliver)
 end
 
-function stepReachQuest(info)
+function collectNameBlocked(name)
+	local low = string.lower(tostring(name or ""))
+	for _, b in ipairs(QUEST.COLLECT_BLOCK) do
+		if string.find(low, b, 1, true) then return true end
+	end
 	return false
+end
+
+function activeClickDetectors(item)
+	local out = {}
+	if item:IsA("ClickDetector") then
+		if item.MaxActivationDistance > 0 then out[#out + 1] = item end
+		return out
+	end
+	for _, d in ipairs(item:GetDescendants()) do
+		if d:IsA("ClickDetector") and d.MaxActivationDistance > 0 then
+			out[#out + 1] = d
+		end
+	end
+	return out
+end
+
+function safeFireClick(cd)
+	if not cd then return false end
+	if fireclickdetector then
+		if pcall(fireclickdetector, cd) then return true end
+		if pcall(fireclickdetector, cd, 1) then return true end
+	end
+	return fireRemoteClick(cd)
+end
+
+function safeFirePrompt(pr)
+	if not pr then return false end
+	if fireproximityprompt then
+		if pcall(fireproximityprompt, pr, 0) then return true end
+		if pcall(fireproximityprompt, pr) then return true end
+	end
+	return false
+end
+
+function fireCollectAt(item)
+	local cds = activeClickDetectors(item)
+	local prompts = {}
+	for _, d in ipairs(item:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then prompts[#prompts + 1] = d end
+	end
+	if #cds == 0 and #prompts == 0 then return false end
+	local pos = getPos(item)
+	local hrp = getHRP()
+	if hrp and pos then
+		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 4, 0)) end)
+		task.wait(QUEST.COLLECT_WAIT)
+	end
+	for _ = 1, 2 do
+		for _, cd in ipairs(cds) do safeFireClick(cd) end
+		for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
+		task.wait(0.05)
+	end
+	return true
+end
+
+function stepCollectQuest(npc, info)
+	if questDone() then return false end
+	for _, fp in ipairs(info.collectFolders or {}) do
+		local folder = resolvePath(fp)
+		if folder then
+			for _, item in ipairs(folder:GetChildren()) do
+				if not isActive() or questDone() then return false end
+				if not collectNameBlocked(item.Name) and fireCollectAt(item) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function stepReachQuest(info)
+	local pos
+	if type(info.pos) == "table" then
+		pos = Vector3.new(info.pos[1], info.pos[2], info.pos[3])
+	else
+		local target = resolvePath(info.target)
+		local p = target and getPos(target)
+		if p then pos = p + Vector3.new(0, 4, 0) end
+	end
+	if not pos then return false end
+	local hrp = getHRP()
+	if hrp then pcall(function() hrp.CFrame = CFrame.new(pos) end) end
+	return true
+end
+
+function stepReachAllQuest(info)
+	local folder = resolvePath(info.folder)
+	if not folder then return false end
+	for _, p in ipairs(folder:GetDescendants()) do
+		if not isActive() or questDone() then return false end
+		if p:IsA("BasePart") then
+			local hrp = getHRP()
+			if hrp then pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, 4, 0)) end) end
+			task.wait(0.08)
+		end
+	end
+	return true
 end
 
 function stepActiveQuest(npc, info)
@@ -1006,7 +1107,10 @@ function stepActiveQuest(npc, info)
 		return true
 	end
 	local kind = info.kind or "mob"
-	if kind == "deliver" or kind == "collect" then
+	if kind == "deliver" then
+		return deliverQuestItems(npc, info)
+	elseif kind == "collect" then
+		if not q.Completed then stepCollectQuest(npc, info) end
 		return deliverQuestItems(npc, info)
 	elseif kind == "talk" then
 		return stepTalkQuest(npc, info)
@@ -1019,7 +1123,7 @@ function stepActiveQuest(npc, info)
 	elseif kind == "reach" then
 		return stepReachQuest(info)
 	elseif kind == "reachAll" then
-		return false
+		return stepReachAllQuest(info)
 	end
 	return false
 end
