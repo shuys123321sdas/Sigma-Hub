@@ -740,9 +740,6 @@ type ConfigType__DARKLUA_TYPE_a={
     end
     
     function r.SafeCallback(u,...)
-    if getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS then
-    return
-    end
     if not u then
     return
     end
