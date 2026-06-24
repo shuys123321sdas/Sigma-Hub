@@ -5423,215 +5423,6 @@ type ConfigType__DARKLUA_TYPE_a={
     
     
     
-    return aa end function a.AW()
-    local aa={}
-    
-    local ab=a.load'd'
-    local ac=ab.New
-    local ad=game:GetService("RunService")
-    
-    function aa.New(af)
-    local ag={
-    Frame=nil,
-    Connection=nil,
-    QuickButton=nil,
-    }
-    
-    local ah=af.Watermark or{}
-    local ai={
-    Enabled=ah.Enabled~=false,
-    ShowFPS=ah.ShowFPS~=false,
-    ShowTime=ah.ShowTime~=false,
-    QuickOpen=ah.QuickOpen~=false,
-    Draggable=ah.Draggable~=false,
-    Position=ah.Position or UDim2.new(0,16,0,16),
-    Size=ah.Size or UDim2.new(0,150,0,40),
-    }
-    
-    if ai.Enabled==false then
-    af.IsWatermarkEnabled=false
-    function ag.Visible()end
-    function ag.Edit()end
-    return ag
-    end
-    
-    local aj=ac("Frame",{
-    Name="SigmaWatermark",
-    Size=ai.Size,
-    Position=ai.Position,
-    BackgroundColor3=Color3.fromRGB(12,12,16),
-    BackgroundTransparency=0.18,
-    Parent=af.Parent,
-    Active=true,
-    Visible=true,
-    ZIndex=999,
-    ThemeTag={
-    BackgroundColor3="WindowBackground",
-    },
-    },{
-    ac("UICorner",{
-    CornerRadius=UDim.new(0,10),
-    }),
-    ac("UIStroke",{
-    Thickness=1,
-    ApplyStrokeMode="Border",
-    Transparency=0.88,
-    Color=Color3.new(1,1,1),
-    }),
-    })
-    
-    local ak=ac("Frame",{
-    Name="info",
-    BackgroundTransparency=1,
-    Size=UDim2.new(ai.QuickOpen and 0.68 or 1,ai.QuickOpen and-6 or 0,1,0),
-    Position=UDim2.new(0,8,0,0),
-    },{
-    ac("UIListLayout",{
-    FillDirection="Vertical",
-    VerticalAlignment="Center",
-    Padding=UDim.new(0,0),
-    SortOrder="LayoutOrder",
-    }),
-    })
-    ak.Parent=aj
-    
-    local al,am
-    
-    if ai.ShowFPS then
-    al=ac("TextLabel",{
-    Name="fps",
-    BackgroundTransparency=1,
-    FontFace=Font.new(ab.Font,Enum.FontWeight.Medium),
-    Text="0 FPS",
-    TextSize=13,
-    TextColor3=Color3.new(1,1,1),
-    TextXAlignment=Enum.TextXAlignment.Left,
-    AutomaticSize="Y",
-    Size=UDim2.new(1,0,0,0),
-    ThemeTag={TextColor3="Text"},
-    LayoutOrder=1,
-    Parent=ak,
-    })
-    end
-    
-    if ai.ShowTime then
-    am=ac("TextLabel",{
-    Name="time",
-    BackgroundTransparency=1,
-    FontFace=Font.new(ab.Font,Enum.FontWeight.Regular),
-    Text="12:00",
-    TextSize=12,
-    TextColor3=Color3.new(0.75,0.75,0.78),
-    TextXAlignment=Enum.TextXAlignment.Left,
-    AutomaticSize="Y",
-    Size=UDim2.new(1,0,0,0),
-    ThemeTag={TextColor3="Text"},
-    TextTransparency=0.25,
-    LayoutOrder=2,
-    Parent=ak,
-    })
-    end
-    
-    local an
-    if ai.QuickOpen then
-    an=ac("TextButton",{
-    Name="quick",
-    Size=UDim2.new(0,32,0,32),
-    Position=UDim2.new(1,-6,0.5,0),
-    AnchorPoint=Vector2.new(1,0.5),
-    BackgroundTransparency=1,
-    Text="",
-    AutoButtonColor=false,
-    Parent=aj,
-    },{
-    ac("ImageLabel",{
-    Size=UDim2.new(0,18,0,18),
-    Position=UDim2.new(0.5,0,0.5,0),
-    AnchorPoint=Vector2.new(0.5,0.5),
-    BackgroundTransparency=1,
-    Image=ab.Icon"expand"[1],
-    ImageRectOffset=ab.Icon"expand"[2].ImageRectPosition,
-    ImageRectSize=ab.Icon"expand"[2].ImageRectSize,
-    ImageTransparency=0.15,
-    ThemeTag={ImageColor3="Icon"},
-    }),
-    })
-    ag.QuickButton=an
-    end
-    
-    if ai.Draggable then
-    ab.Drag(aj)
-    end
-    
-    local ao=tick()
-    local ap=0
-    ag.Connection=ad.RenderStepped:Connect(function()
-    if not aj or not aj.Parent then
-    if ag.Connection then
-    ag.Connection:Disconnect()
-    end
-    return
-    end
-    if not aj.Visible then
-    return
-    end
-    
-    ap+=1
-    local aq=tick()
-    if aq-ao>=1 then
-    if ai.ShowFPS and al then
-    al.Text=math.floor(ap/(aq-ao)).." FPS"
-    end
-    ao=aq
-    ap=0
-    end
-    
-    if ai.ShowTime and am then
-    local ar=tonumber(os.date("%I"))
-    am.Text=ar..os.date(":%M")
-    end
-    end)
-    
-    function ag.Visible(aq,ar)
-    aj.Visible=ar
-    end
-    
-    function ag.Edit(aq,ar)
-    if ar.Enabled==false then
-    af.IsWatermarkEnabled=false
-    aj.Visible=false
-    return
-    end
-    if ar.Position and aj then
-    aj.Position=ar.Position
-    end
-    if ar.ShowFPS~=nil and al then
-    al.Visible=ar.ShowFPS
-    end
-    if ar.ShowTime~=nil and am then
-    am.Visible=ar.ShowTime
-    end
-    if ar.QuickOpen~=nil and an then
-    an.Visible=ar.QuickOpen
-    end
-    if ar.Draggable~=nil then
-    ai.Draggable=ar.Draggable
-    end
-    end
-    
-    function ag.Destroy()
-    if ag.Connection then
-    ag.Connection:Disconnect()
-    end
-    if aj then
-    aj:Destroy()
-    end
-    end
-    
-    ag.Frame=aj
-    return ag
-    end
-    
     return aa end function a.B()
     local aa={}
     
@@ -12794,8 +12585,6 @@ type ConfigType__DARKLUA_TYPE_a={
     HidePanelBackground=av.HidePanelBackground or false,
     AutoScale=av.AutoScale~=false,
     OpenButton=av.OpenButton,
-    Watermark=av.Watermark,
-    NotifyOnHide=av.NotifyOnHide~=false,
     DragFrameSize=160,
     
     Position=UDim2.new(0.5,0,0.5,0),
@@ -12809,7 +12598,6 @@ type ConfigType__DARKLUA_TYPE_a={
     IsFullscreen=false,
     CanResize=av.Resizable~=false,
     IsOpenButtonEnabled=true,
-    IsWatermarkEnabled=true,
     
     CurrentConfig=nil,
     ConfigManager=nil,
@@ -13837,7 +13625,6 @@ type ConfigType__DARKLUA_TYPE_a={
     
     
     aw.OpenButtonMain=a.load'A'.New(aw)
-    aw.WatermarkMain=a.load'AW'.New(aw)
     
     task.spawn(function()
     if aw.Icon then
@@ -14161,17 +13948,6 @@ type ConfigType__DARKLUA_TYPE_a={
     aw.CanDropdown=false
     aw.Closed=true
     
-    if aw.ToggleKey and aw.NotifyOnHide~=false and av.SigmaHub.Notify then
-    pcall(function()
-    av.SigmaHub:Notify({
-    Title="UI Hidden",
-    Content="Use "..aw.ToggleKey.Name.." to open back.",
-    Duration=2,
-    Icon="eye-off",
-    })
-    end)
-    end
-    
     ap(aw.UIElements.Main,0.9,{
     
     Size=UDim2.new(aw.Size.X.Scale,aw.Size.X.Offset,0,0),
@@ -14387,12 +14163,6 @@ type ConfigType__DARKLUA_TYPE_a={
     end)
     end
     
-    if aw.WatermarkMain and aw.WatermarkMain.QuickButton then
-    an.AddSignal(aw.WatermarkMain.QuickButton.MouseButton1Click,function()
-    aw:Open()
-    end)
-    end
-    
     an.AddSignal(af.InputBegan,function(C,F)
     if F then
     return
@@ -14416,22 +14186,6 @@ type ConfigType__DARKLUA_TYPE_a={
     
     if aw.OpenButton and typeof(aw.OpenButton)=="table"then
     aw:EditOpenButton(aw.OpenButton)
-    end
-    
-    if aw.Watermark and typeof(aw.Watermark)=="table"then
-    aw:EditWatermark(aw.Watermark)
-    end
-    
-    function aw.SetWatermarkVisible(C,F)
-    if aw.WatermarkMain and aw.WatermarkMain.Visible then
-    aw.WatermarkMain:Visible(F)
-    end
-    end
-    
-    function aw.EditWatermark(C,F)
-    if aw.WatermarkMain and aw.WatermarkMain.Edit then
-    return aw.WatermarkMain:Edit(F)
-    end
     end
     
     local C=a.load'_'
@@ -15216,27 +14970,6 @@ type ConfigType__DARKLUA_TYPE_a={
     return false
     end
     
-    function aa.SetCoreGuiHidden(az,aA,aB)
-    local aC=game:GetService("StarterGui")
-    aB=aB or{
-    Enum.CoreGuiType.PlayerList,
-    Enum.CoreGuiType.Health,
-    Enum.CoreGuiType.Backpack,
-    Enum.CoreGuiType.Chat,
-    Enum.CoreGuiType.EmotesMenu,
-    }
-    aa.CoreGuiHidden=aA==true
-    for aD,aE in ipairs(aB)do
-    pcall(function()
-    aC:SetCoreGuiEnabled(aE,not aA)
-    end)
-    end
-    end
-    
-    function aa.IsCoreGuiHidden(az)
-    return aa.CoreGuiHidden==true
-    end
-    
     function aa.ToggleAcrylic(az,aA)
     if aa.Window and aa.Window.AcrylicPaint and aa.Window.AcrylicPaint.Model then
     aa.Window.Acrylic=aA
@@ -15442,7 +15175,7 @@ type ConfigType__DARKLUA_TYPE_a={
     return h
     end
     
-    aa.Build = "SigmaHub-1.1"
+    aa.Build = "SigmaHub-1"
     aa.HubName = "Sigma Hub"
     getgenv().SigmaHub = aa
     getgenv().WindUI = aa
