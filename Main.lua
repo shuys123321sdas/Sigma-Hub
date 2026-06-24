@@ -132,6 +132,8 @@ HAKI = {
 	CLUSTER_RADIUS = 90,
 	TP_INTERVAL = 0.25,
 	SKILL_RETRY = 1.2,
+	DEBUG_INTERVAL = 4,
+	_logAt = {},
 }
 
 RAYLEIGH = {
@@ -2331,7 +2333,42 @@ function fishStep()
 end
 
 function hubRunning()
-	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE
+	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled()
+end
+
+function hakiModeEnabled()
+	return HAKI.AUTO_KEN or HAKI.AUTO_BUSO or HAKI.FAST or RAYLEIGH.ON
+end
+
+function hakiDebugOn()
+	if getgenv().SigmaHakiDebug == false then return false end
+	return true
+end
+
+function hakiLog(tag, msg, interval)
+	if not hakiDebugOn() then return end
+	interval = interval or HAKI.DEBUG_INTERVAL
+	local now = os.clock()
+	local key = tostring(tag or "haki")
+	if now - (HAKI._logAt[key] or 0) < interval then return end
+	HAKI._logAt[key] = now
+	print("[Sigma Haki]", msg)
+end
+
+function hakiDiagSnapshot()
+	local char = player.Character
+	local d = getData()
+	local ratio, amount, cap = readHakiBar()
+	return string.format(
+		"ken=%s buso=%s fast=%s ray=%s | hubRun=%s world=%s active=%s | obsUnlocked=%s busoUnlocked=%s | obsAttr=%s hakiAttr=%s | bar=%s (%s/%s) | keyObs=%s keyBuso=%s | quest=%s",
+		tostring(HAKI.AUTO_KEN), tostring(HAKI.AUTO_BUSO), tostring(HAKI.FAST), tostring(RAYLEIGH.ON),
+		tostring(hubRunning()), tostring(worldReady()), tostring(isActive()),
+		tostring(hakiAbilityUnlocked("Observation")), tostring(hakiAbilityUnlocked("Haki")),
+		tostring(char and char:GetAttribute("Observation")), tostring(char and char:GetAttribute("Haki")),
+		tostring(ratio and math.floor(ratio * 100) or "nil"), tostring(amount or "?"), tostring(cap or "?"),
+		tostring(getHakiActionKey("Observation")), tostring(getHakiActionKey("Haki")),
+		tostring(d and d.Quests and d.Quests.Active or "no-data")
+	)
 end
 
 function spawnOpen()
@@ -2639,18 +2676,30 @@ end
 
 function pressHakiSkill(skillName)
 	local key = getHakiActionKey(skillName)
-	if key and pressKeyAction(key, 0.03) then return true end
+	local viaVim = key and pressKeyAction(key, 0.03)
+	if viaVim then
+		hakiLog("press:" .. skillName, string.format("pressed %s via VIM key=%s", skillName, tostring(key)), 2)
+		return true
+	end
 	local ctx = {}
 	local hrp = getHRP()
 	if hrp then
 		local cf = hrp.CFrame
 		ctx = { RayCFrame = cf, CameraCFrame = cf, MouseCFrame = cf, RayCFrameIA = cf }
 	end
+	local ok = false
 	if key then
-		return exec("SkillCaller", { key, ctx, nil, "Start" })
+		ok = exec("SkillCaller", { key, ctx, nil, "Start" })
 			or exec("SkillCaller", { key, ctx, nil, "End" })
 	end
-	return exec("SkillCaller", { skillName, ctx, nil, "Start" })
+	if not ok then
+		ok = exec("SkillCaller", { skillName, ctx, nil, "Start" })
+	end
+	hakiLog("press:" .. skillName, string.format(
+		"press %s key=%s vim=%s skillCaller=%s vimAvail=%s",
+		skillName, tostring(key), tostring(viaVim), tostring(ok), tostring(UNC.vim)
+	), 2)
+	return ok
 end
 
 function readHakiBar()
@@ -2728,6 +2777,7 @@ function hakiGoToFarmSpot(forceTp)
 	end
 	if target then tpUnderMob(target) end
 	STATE.hakiLastTp = now
+	return target
 end
 
 function tryHakiRejoin()
@@ -2743,47 +2793,82 @@ function tryHakiRejoin()
 end
 
 function stepAutoKenbunshoku()
-	if not HAKI.AUTO_KEN or not isActive() then return end
-	if not hakiAbilityUnlocked("Observation") then return end
+	if not HAKI.AUTO_KEN then return end
+	if not isActive() then
+		hakiLog("ken:block", "Auto Ken OFF — hub loop not active (isActive=false)", 6)
+		return
+	end
+	if not hakiAbilityUnlocked("Observation") then
+		hakiLog("ken:lock", "Observation not unlocked (Abilities/Special/Keybinds)", 8)
+		return
+	end
 	local char = player.Character
-	if not char then return end
+	if not char then
+		hakiLog("ken:nchar", "no character", 6)
+		return
+	end
 	if char:GetAttribute("Observation") == true then return end
 	local now = os.clock()
 	if now - (STATE.hakiLastKen or 0) < HAKI.SKILL_RETRY then return end
 	STATE.hakiLastKen = now
-	pressHakiSkill("Observation")
+	local ok = pressHakiSkill("Observation")
+	hakiLog("ken:try", string.format("Observation OFF -> press (ok=%s attrNow=%s)", tostring(ok), tostring(char:GetAttribute("Observation"))), 2)
 end
 
 function stepAutoBusoshoku()
-	if not HAKI.AUTO_BUSO or not isActive() then return end
-	if not hakiAbilityUnlocked("Haki") then return end
+	if not HAKI.AUTO_BUSO then return end
+	if not isActive() then
+		hakiLog("buso:block", "Auto Buso OFF — hub loop not active (isActive=false)", 6)
+		return
+	end
+	if not hakiAbilityUnlocked("Haki") then
+		hakiLog("buso:lock", "Busoshoku not unlocked (Abilities/Special/Keybinds)", 8)
+		return
+	end
 	local char = player.Character
-	if not char then return end
+	if not char then
+		hakiLog("buso:nchar", "no character", 6)
+		return
+	end
 	if char:GetAttribute("Haki") == true then return end
 	local now = os.clock()
 	if now - (STATE.hakiLastBuso or 0) < HAKI.SKILL_RETRY then return end
 	STATE.hakiLastBuso = now
-	pressHakiSkill("Haki")
+	local ok = pressHakiSkill("Haki")
+	hakiLog("buso:try", string.format("Haki OFF -> press (ok=%s attrNow=%s)", tostring(ok), tostring(char:GetAttribute("Haki"))), 2)
 end
 
 function stepFastHaki()
-	if not HAKI.FAST or not isActive() then
-		STATE.hakiFastRunning = false
+	if not HAKI.FAST then return false end
+	if not isActive() then
+		hakiLog("fast:block", "Fast Haki — isActive=false", 6)
 		return false
 	end
-	if statLevel("Haki") >= HAKI.STOP_LEVEL then return false end
-	if not hakiAbilityUnlocked("Haki") then return false end
-	local ratio = select(1, readHakiBar())
-	if ratio == nil then return false end
+	if statLevel("Haki") >= HAKI.STOP_LEVEL then
+		hakiLog("fast:max", "Haki level at stop threshold", 15)
+		return false
+	end
+	if not hakiAbilityUnlocked("Haki") then
+		hakiLog("fast:lock", "Busoshoku not unlocked", 8)
+		return false
+	end
+	local ratio, amount, cap = readHakiBar()
+	if ratio == nil then
+		hakiLog("fast:nobar", "cannot read haki bar (attr/ui)", 6)
+		return false
+	end
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
-		hakiGoToFarmSpot(true)
+		local mob = hakiGoToFarmSpot(true)
+		hakiLog("fast:full", string.format("bar full %d%% (%d/%d) -> TP mob=%s", math.floor(ratio * 100), amount or 0, cap or 0, tostring(mob and mob.Name)), 3)
 		return true
 	end
 	if STATE.hakiFastRunning and ratio <= HAKI.EMPTY_RATIO then
+		hakiLog("fast:rejoin", string.format("bar empty %d%% -> rejoin", math.floor(ratio * 100)), 3)
 		return tryHakiRejoin()
 	end
 	hakiGoToFarmSpot(true)
+	hakiLog("fast:wait", string.format("waiting bar %d%% (%d/%d)", math.floor(ratio * 100), amount or 0, cap or 0), 5)
 	return true
 end
 
@@ -2905,11 +2990,25 @@ function rayleighAccept(qn)
 end
 
 function stepRayleigh()
-	if not RAYLEIGH.ON or not isActive() then return false end
-	if not rayleighReqMet() then return false end
+	if not RAYLEIGH.ON then return false end
+	if not isActive() then
+		hakiLog("ray:block", "Auto Rayleigh — isActive=false", 6)
+		return false
+	end
+	if not rayleighReqMet() then
+		hakiLog("ray:req", string.format(
+			"stats too low | Melee=%d Def=%d Sword=%d Sniper=%d (need 500/250/250/250)",
+			statLevel("Melee"), statLevel("Defense"), statLevel("Sword"), statLevel("Sniper")
+		), 10)
+		return false
+	end
 	local q = getQuests()
-	if not q then return false end
+	if not q then
+		hakiLog("ray:nodata", "no quest data", 6)
+		return false
+	end
 	local active = q.Active
+	hakiLog("ray:tick", string.format("active='%s' completed=%s", tostring(active), tostring(q.Completed)), 6)
 
 	if active == "Strange Powers #1" then
 		if q.Completed then rayClaim("Strange Powers #1"); return true end
@@ -2984,10 +3083,18 @@ function stepRayleigh()
 end
 
 function stepHakiFeatures()
-	stepAutoKenbunshoku()
-	stepAutoBusoshoku()
-	if RAYLEIGH.ON and stepRayleigh() then return end
-	stepFastHaki()
+	if not hakiModeEnabled() then return end
+	hakiLog("diag", hakiDiagSnapshot(), 8)
+	local ok, err = pcall(function()
+		stepAutoKenbunshoku()
+		stepAutoBusoshoku()
+		if RAYLEIGH.ON and stepRayleigh() then return end
+		stepFastHaki()
+	end)
+	if not ok then
+		warn("[Sigma Haki] ERROR:", err)
+		print(debug.traceback(tostring(err), 2))
+	end
 end
 
 function serviceTick()
@@ -2999,7 +3106,15 @@ end
 
 function featureTick()
 	if not hubRunning() then return end
-	if spawnOpen() or not worldReady() then return end
+	if spawnOpen() or not worldReady() then
+		if hakiModeEnabled() then
+			hakiLog("gate", string.format(
+				"blocked | spawn=%s worldReady=%s data=%s",
+				tostring(spawnOpen()), tostring(not spawnOpen() and worldReady()), tostring(getData() ~= nil)
+			), 5)
+		end
+		return
+	end
 	stepHakiFeatures()
 	if questExpertiseEnabled() then
 		stepExpertiseQuest()
@@ -3139,6 +3254,10 @@ function SigmaFish.setAutoKenbunshoku(on)
 	cfg.AutoKenbunshoku = on == true
 	getgenv().SigmaFishConfig = cfg
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku
+	if on then
+		print("[Sigma Haki] Auto Kenbunshoku ON")
+		print("[Sigma Haki]", hakiDiagSnapshot())
+	end
 	ensureLoopRunning()
 end
 
@@ -3147,6 +3266,10 @@ function SigmaFish.setAutoBusoshoku(on)
 	cfg.AutoBusoshoku = on == true
 	getgenv().SigmaFishConfig = cfg
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku
+	if on then
+		print("[Sigma Haki] Auto Busoshoku ON")
+		print("[Sigma Haki]", hakiDiagSnapshot())
+	end
 	ensureLoopRunning()
 end
 
@@ -3158,6 +3281,9 @@ function SigmaFish.setFastHaki(on)
 	if not HAKI.FAST then
 		STATE.hakiFastRunning = false
 		STATE.hakiHoldMob = nil
+	else
+		print("[Sigma Haki] Fast Haki ON")
+		print("[Sigma Haki]", hakiDiagSnapshot())
 	end
 	ensureLoopRunning()
 end
@@ -3167,7 +3293,12 @@ function SigmaFish.setAutoRayleigh(on)
 	cfg.AutoRayleigh = on == true
 	getgenv().SigmaFishConfig = cfg
 	RAYLEIGH.ON = cfg.AutoRayleigh
-	if not RAYLEIGH.ON then RAYLEIGH._meditateTrack = nil end
+	if not RAYLEIGH.ON then
+		RAYLEIGH._meditateTrack = nil
+	else
+		print("[Sigma Haki] Auto Rayleigh ON")
+		print("[Sigma Haki]", hakiDiagSnapshot())
+	end
 	ensureLoopRunning()
 end
 
