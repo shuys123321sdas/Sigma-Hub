@@ -8,8 +8,6 @@ local function uiLog(opts, msg)
 		opts.log(msg)
 	elseif getgenv().SigmaHubLog then
 		getgenv().SigmaHubLog(msg)
-	else
-		print("[SigmaUI]", msg)
 	end
 end
 
@@ -138,6 +136,36 @@ function SigmaUI.build(hub, Fish, opts)
 			}),
 		},
 	})
+
+	getgenv().__SIGMA_UI_WINDOW = Window
+	local Players = game:GetService("Players")
+	local HIDE_ALIAS = "Sigma Hub"
+
+	local function applyUiHideName()
+		local hide = (getgenv().SigmaFishConfig or {}).HideName ~= false
+		if Window.User and Window.User.SetAnonymous then
+			Window.User:SetAnonymous(hide)
+			if hide then
+				task.defer(function()
+					for _, d in ipairs(Players.LocalPlayer.PlayerGui:GetDescendants()) do
+						if d:IsA("TextLabel") then
+							if d.Name == "DisplayName" and d.Text == "Anonymous" then
+								d.Text = HIDE_ALIAS
+							elseif d.Name == "UserName" and d.Text == "anonymous" then
+								d.Text = "sigmahub"
+							end
+						end
+					end
+				end)
+			end
+		end
+		if Window.EditOpenButton then
+			pcall(function()
+				Window:EditOpenButton({ Title = hide and HIDE_ALIAS or "Sigma Hub" })
+			end)
+		end
+	end
+	getgenv().SigmaApplyUiHideName = applyUiHideName
 
 	local configFile
 	if Window.ConfigManager then
@@ -278,6 +306,7 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.HideName = v ~= false
 				if Fish and Fish.setHideName then Fish.setHideName(v) end
+				applyUiHideName()
 				notify(hub, "Hide Name", v and "Sigma Hub" or "OFF", "user", 2)
 			end,
 		})
@@ -516,26 +545,8 @@ function SigmaUI.build(hub, Fish, opts)
 
 		AutoSkillTab:Section({ Title = "Skill Spam", Icon = "keyboard", Box = true, BoxBorder = true })
 
-		AutoSkillTab:Paragraph({
-			Title = "Note",
-			Desc = "Chọn phím bật → spam VIM (giữ rồi thả). Không dùng SkillCaller.",
-		})
-
-		autoSkillToggle = AutoSkillTab:Toggle({
-			Title = "Auto Skill",
-			Value = cfg.AutoSkill == true,
-			Default = false,
-			Flag = "Sigma_AutoSkill",
-			Callback = function(v)
-				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-				getgenv().SigmaFishConfig.AutoSkill = v == true
-				applySkillHoldFromUI()
-				if Fish and Fish.setAutoSkill then Fish.setAutoSkill(v) end
-				notify(hub, "Auto Skill", v and "ON" or "OFF", "zap", 2)
-			end,
-		})
-
 		local skillKeyOptions = { "Z", "X", "C", "V", "B", "N", "F", "G", "H", "J", "K", "L" }
+
 		local function applySkillHoldFromUI()
 			if not skillHoldInput then return end
 			local raw = skillHoldInput.Value
@@ -547,10 +558,20 @@ function SigmaUI.build(hub, Fish, opts)
 			if Fish and Fish.setSkillHoldSec then Fish.setSkillHoldSec(n) end
 		end
 
-		local skillPick = cfg.SkillKeys
-		if type(skillPick) ~= "table" or not skillPick[1] then
-			skillPick = {}
-			if type(cfg.SkillKeys) == "table" then
+		local function applySkillKeysFromUI()
+			if not skillKeysDropdown then return end
+			local v = skillKeysDropdown.Value
+			if v == nil then return end
+			getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+			getgenv().SigmaFishConfig.SkillKeys = v
+			if Fish and Fish.setSkillKeys then Fish.setSkillKeys(v) end
+		end
+
+		local skillPick = {}
+		if type(cfg.SkillKeys) == "table" then
+			if cfg.SkillKeys[1] then
+				skillPick = cfg.SkillKeys
+			else
 				for _, k in ipairs(skillKeyOptions) do
 					if cfg.SkillKeys[k] == true then skillPick[#skillPick + 1] = k end
 				end
@@ -568,6 +589,9 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.SkillKeys = v
 				applySkillHoldFromUI()
 				if Fish and Fish.setSkillKeys then Fish.setSkillKeys(v) end
+				if getgenv().SigmaFishConfig.AutoSkill and Fish and Fish.setAutoSkill then
+					Fish.setAutoSkill(true)
+				end
 			end,
 		})
 
@@ -583,6 +607,24 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SkillHoldSec = n
 				if Fish and Fish.setSkillHoldSec then Fish.setSkillHoldSec(n) end
+			end,
+		})
+
+		autoSkillToggle = AutoSkillTab:Toggle({
+			Title = "Auto Skill",
+			Value = cfg.AutoSkill == true,
+			Default = false,
+			Flag = "Sigma_AutoSkill",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoSkill = v == true
+				applySkillHoldFromUI()
+				applySkillKeysFromUI()
+				if Fish and Fish.setSkillKeys then
+					Fish.setSkillKeys(getgenv().SigmaFishConfig.SkillKeys)
+				end
+				if Fish and Fish.setAutoSkill then Fish.setAutoSkill(v) end
+				notify(hub, "Auto Skill", v and "ON" or "OFF", "zap", 2)
 			end,
 		})
 
@@ -639,7 +681,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 		SettingsTab:Paragraph({
 			Title = "Whitelist",
-			Desc = "Điền tên player được phép (phân cách bằng dấu phẩy). Có người lạ → rejoin ngay.",
+			Desc = "Allowed player names (comma-separated). Kicks you from the server if anyone else is present.",
 		})
 
 		rejoinWhitelistInput = SettingsTab:Input({
@@ -655,7 +697,7 @@ function SigmaUI.build(hub, Fish, opts)
 		})
 
 		autoWhitelistToggle = SettingsTab:Toggle({
-			Title = "Auto Whitelist Rejoin",
+			Title = "Auto Whitelist Kick",
 			Value = cfg.AutoWhitelistRejoin == true,
 			Default = false,
 			Flag = "Sigma_AutoWhitelistRejoin",
@@ -669,7 +711,7 @@ function SigmaUI.build(hub, Fish, opts)
 					end
 				end
 				if Fish and Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(v) end
-				notify(hub, "Whitelist Rejoin", v and "ON" or "OFF", "shield-check", 2)
+				notify(hub, "Whitelist Kick", v and "ON" or "OFF", "shield-check", 2)
 			end,
 		})
 
@@ -758,8 +800,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 	if not populateOk then
 		uiLog(opts, "POPULATE FAILED: " .. tostring(populateErr))
-		warn("[SigmaUI] populate error:", populateErr)
-		warn(debug.traceback(tostring(populateErr), 2))
 		error("SigmaUI populate failed: " .. tostring(populateErr))
 	end
 
@@ -839,6 +879,7 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
 		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
 		if Fish.applyConfig then Fish.applyConfig() end
+		applyUiHideName()
 		uiLog(opts, "Config synced from UI toggles")
 	end)
 
