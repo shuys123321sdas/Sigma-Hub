@@ -387,7 +387,7 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 
 		cacheCountPara = FishTab:Paragraph({
-			Title = "Cache Count",
+			Title = "Cache",
 			Desc = formatCacheCounts(),
 		})
 
