@@ -1,4 +1,5 @@
 --[[ SigmaUI — Fishing + Quest tabs ]]
+-- SIGMA_MODULE=ui
 
 local SigmaUI = {}
 
