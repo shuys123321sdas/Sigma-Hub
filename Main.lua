@@ -41,6 +41,7 @@ HUB = {
 	ANTI_AFK = true,
 	ANTI_AFK_JUMP = 180,
 	LOOP_DELAY = 0.35,
+	SPAWN_COOLDOWN = 10,
 }
 
 GRAPPLE = {
@@ -75,7 +76,7 @@ STATE = {
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
-	collectSweep = nil,
+	collectSweep = nil, spawnAt = 0,
 }
 
 QUEST = {
@@ -114,6 +115,7 @@ QUEST = {
 	TARGET_SCAN = 800,
 	TP_OFFSET = 2,
 	_deliverAt = {},
+	_actionAt = {},
 }
 
 BEGGAR = {
@@ -174,6 +176,69 @@ end
 function qHist(name)
 	local q = getQuests()
 	return q and q.History and q.History[name] == true
+end
+
+function questCooldownRemaining(name)
+	local q = getQuests()
+	if not q or type(q.Cooldowns) ~= "table" then return 0 end
+	local v = q.Cooldowns[name]
+	if type(v) ~= "table" then return 0 end
+	return math.max(0, (tonumber(v.cd) or 0) - (os.time() - (tonumber(v.last) or 0)))
+end
+
+function questAcceptReady(questName)
+	return questCooldownRemaining(questName) <= 0
+end
+
+function minCooldownInList(list)
+	local best = 0
+	for _, npc in ipairs(list or {}) do
+		local info = QUEST.DB[npc]
+		if info and info.quest then
+			local cd = questCooldownRemaining(info.quest)
+			if cd > best then best = cd end
+		end
+	end
+	return best
+end
+
+function objectiveProgress(obj)
+	if type(obj) ~= "table" then return 0, 1, false end
+	local prog = tonumber(obj.Progress or obj.progress) or 0
+	local req = tonumber(obj.Requirement or obj.Goal or obj.goal or obj.Max or obj.max) or 1
+	if req <= 0 then req = 1 end
+	return prog, req, prog >= req
+end
+
+function questObjectivesComplete(q)
+	if not q then return false end
+	if q.Completed == true then return true end
+	if type(q.Objectives) ~= "table" then return false end
+	for _, obj in pairs(q.Objectives) do
+		local _, _, done = objectiveProgress(obj)
+		if not done then return false end
+	end
+	return true
+end
+
+function questNeedsDeliverItem(q, itemName)
+	if not q or type(q.Objectives) ~= "table" then return false end
+	local want = string.lower(tostring(itemName or ""))
+	for name, obj in pairs(q.Objectives) do
+		local low = string.lower(tostring(name))
+		if low == want or string.find(low, want, 1, true) then
+			local prog, req, done = objectiveProgress(obj)
+			if not done and prog < req then return true end
+		end
+	end
+	return false
+end
+
+function questActionReady(key, interval)
+	local now = os.clock()
+	if now - (QUEST._actionAt[key] or 0) < (interval or 2.5) then return false end
+	QUEST._actionAt[key] = now
+	return true
 end
 
 function exec(ch, args)
@@ -247,6 +312,22 @@ function questExec(fm, ...)
 	setMerchant(fm)
 	task.wait(0.05)
 	return exec("QuestEvents", { ... })
+end
+
+function remoteQuestAccept(model, questName)
+	if not questAcceptReady(questName) then return false end
+	if not questActionReady("accept:" .. tostring(questName), 3) then return false end
+	return questExec(model, "Accept", questName)
+end
+
+function remoteQuestClaim(model, questName)
+	if not questActionReady("claim:" .. tostring(questName), 2.5) then return false end
+	return questExec(model, "Claim")
+end
+
+function remoteQuestDeliver(model, itemName, questName)
+	if not questActionReady("deliver:" .. tostring(questName or itemName), 2) then return false end
+	return questExec(model, "Deliver", itemName)
 end
 
 function remoteNPC(model)
@@ -866,12 +947,18 @@ function m1AttackOnce()
 	if not VirtualUser then return false end
 	local cam = workspace.CurrentCamera
 	if not cam then return false end
-	pcall(function()
-		VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
-		task.wait(0.03)
-		VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
-	end)
+	pcall(function() VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame) end)
+	task.wait(0.03)
+	pcall(function() VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame) end)
 	return true
+end
+
+function mobAttackOnce(tool)
+	if tool and tool.Parent then
+		local ok = pcall(function() tool:Activate() end)
+		if ok then return true end
+	end
+	return m1AttackOnce()
 end
 
 function startM1Loop()
@@ -879,9 +966,9 @@ function startM1Loop()
 	STATE.m1RunId = run
 	task.spawn(function()
 		while isActive() and STATE.m1RunId == run do
+			m1AttackOnce()
 			task.wait(QUEST.ATTACK_CD)
 			if not isActive() or STATE.m1RunId ~= run then break end
-			m1AttackOnce()
 		end
 	end)
 	return run
@@ -903,14 +990,15 @@ function questMobKillEnabled()
 	return getgenv().__SIGMA_QUEST_MOB_KILL == true
 end
 
-function attackLoopOnMob(mob)
-	if not questMobKillEnabled() then return false end
+function attackLoopOnMob(mob, mode)
+	mode = mode or "pick"
+	if not questMobKillEnabled() or not questModeOk(mode) then return false end
 	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return true end
-	ensureCombatReady()
+	local tool = ensureCombatReady()
 	tpNearMob(mob, true)
 	local lastHp, stallAt = hum.Health, os.clock()
-	while isActive() and questMobKillEnabled() and questPickEnabled() do
+	while isActive() and questMobKillEnabled() and questModeOk(mode) do
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
 		local mobRoot = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
@@ -923,6 +1011,8 @@ function attackLoopOnMob(mob)
 				zeroHRPVel(hrp)
 			end
 		end
+		if not tool or not tool.Parent then tool = ensureCombatReady() end
+		mobAttackOnce(tool)
 		task.wait(QUEST.ATTACK_CD)
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
@@ -936,15 +1026,17 @@ function attackLoopOnMob(mob)
 	return false
 end
 
-function attackBurstOnMob(mob)
+function attackBurstOnMob(mob, mode)
+	mode = mode or "pick"
 	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return true end
 	setQuestMobKill(true)
-	startM1Loop()
-	ensureCombatReady()
-	tpNearMob(mob, true)
-	local ok = attackLoopOnMob(mob)
-	stopM1Loop()
+	pcall(function()
+		if VirtualUser and VirtualUser.CaptureController then
+			VirtualUser:CaptureController()
+		end
+	end)
+	local ok = attackLoopOnMob(mob, mode)
 	setQuestMobKill(false)
 	hum = mob:FindFirstChildOfClass("Humanoid")
 	return ok or not hum or hum.Health <= 0
@@ -967,7 +1059,7 @@ function stepFarmQuest(npc, info, mode)
 		task.wait(0.2)
 	end
 	if not questModeOk(mode or "pick") then return false end
-	return attackBurstOnMob(mob)
+	return attackBurstOnMob(mob, mode)
 end
 
 function questInfoNeedsKill(info)
@@ -1584,18 +1676,20 @@ function tryAcceptQuestList(list, mode)
 	if not questModeOk(mode or "pick") then return false end
 	local n = #list
 	if n < 1 then return false end
+	if not questActionReady("acceptlist:" .. (mode or "pick"), 2) then return false end
 	for step = 0, n - 1 do
 		if not questModeOk(mode or "pick") then return false end
 		local idx = ((QUEST.RIDX - 1 + step) % n) + 1
 		local npc = list[idx]
 		local info = QUEST.DB[npc]
 		if info and info.kind ~= "sam" and info.kind ~= "skip" then
-			local model = findNPC(npc)
-			if model then
-				clickNPC(model)
-				questExec(model, "Accept", info.quest)
-				QUEST.RIDX = (idx % n) + 1
-				return true
+			local cd = questCooldownRemaining(info.quest)
+			if cd <= 0 then
+				local model = findNPC(npc)
+				if model and remoteQuestAccept(model, info.quest) then
+					QUEST.RIDX = (idx % n) + 1
+					return true
+				end
 			end
 		end
 	end
@@ -1605,11 +1699,16 @@ end
 function deliverQuestItems(npc, info)
 	local model = findNPC(npc)
 	if not model then return false end
+	local q = getQuests()
 	local any = false
 	for _, item in ipairs(info.deliverItems or {}) do
 		if hasItem(item) then
-			questExec(model, "Deliver", item)
-			any = true
+			local okDeliver = q and (q.Completed == true or questNeedsDeliverItem(q, item))
+			if okDeliver then
+				if remoteQuestDeliver(model, item, info.quest) then
+					any = true
+				end
+			end
 		end
 	end
 	return any
@@ -1620,7 +1719,6 @@ function stepTalkQuest(npc, info, mode)
 	local target = findNPC(info.talkNPC)
 	if not target then return false end
 	if not questModeOk(mode or "pick") then return false end
-	tpNear(target)
 	return questExec(target, "Deliver", info.deliver)
 end
 
@@ -1781,13 +1879,17 @@ function usePearsForOldBeggar()
 end
 
 function deliverCollectItems(npc, info)
+	local q = getQuests()
+	if not q or q.Completed ~= true then return false end
+	if not questActionReady("deliver:" .. tostring(info.quest), 2.5) then return false end
 	local model = findNPC(npc)
 	if not model then return false end
 	local any = false
 	for _, it in ipairs(info.deliverItems or {}) do
 		if countItem(it) > 0 then
-			questExec(model, "Deliver", it)
-			any = true
+			if remoteQuestDeliver(model, it, info.quest) then
+				any = true
+			end
 		end
 	end
 	return any
@@ -1959,7 +2061,7 @@ function stepActiveQuest(npc, info, mode)
 	if q.Completed then
 		if info.noClaim then return false end
 		local model = findNPC(npc)
-		if model then clickNPC(model) questExec(model, "Claim") end
+		if model then remoteQuestClaim(model, info.quest) end
 		return true
 	end
 	local kind = info.kind or "mob"
@@ -1974,7 +2076,9 @@ function stepActiveQuest(npc, info, mode)
 		if info.quest == FISH.Q_FAVOR then return runFavorQuest() end
 		if hasItem(info.carryItem or "Package") then return deliverPackage() end
 		local model = findNPC(npc)
-		if model then clickNPC(model) questExec(model, "Accept", info.quest) end
+		if model and questAcceptReady(info.quest) then
+			remoteQuestAccept(model, info.quest)
+		end
 		return true
 	elseif kind == "reach" then
 		return stepReachQuest(npc, info, mode)
@@ -1998,7 +2102,10 @@ function runQuestList(list, mode)
 		stepActiveQuest(npc, info, mode)
 		return
 	end
-	-- Giống runFavorQuest: quest khác (kể cả Fisherman) vẫn Accept quest đã chọn
+	local cd = minCooldownInList(list)
+	if cd > 0 then
+		return
+	end
 	tryAcceptQuestList(list, mode)
 end
 
@@ -2193,6 +2300,19 @@ end
 function ensureSpawn()
 	if HUB.AUTO_SPAWN == false then return false end
 	if not spawnOpen() then return false end
+	if worldReady() and getData() then
+		pcall(function()
+			local pg = player and player:FindFirstChild("PlayerGui")
+			local load = pg and pg:FindFirstChild("Load")
+			if load then load.Enabled = false end
+		end)
+		return false
+	end
+	local now = os.clock()
+	if STATE.spawnAt and now - STATE.spawnAt < HUB.SPAWN_COOLDOWN then
+		return true
+	end
+	STATE.spawnAt = now
 	exec("Load", { "Load" })
 	local pg = player and player:FindFirstChild("PlayerGui")
 	local load = pg and pg:FindFirstChild("Load")
