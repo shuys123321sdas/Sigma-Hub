@@ -43,7 +43,6 @@ FISH = {
 	FISHERMAN = "Fisherman", COOKER = "Cooker", ROD_CAT = "Utility",
 	RODS = { "Super Rod", "Sturdy Rod", "Wood Rod" },
 	Q_FAVOR = "Fisherman's Favor", Q_TASK = "Fisherman's Task", Q_CHALLENGE = "Fisherman's Challenge",
-	Q_FISHERMAN = "Fisherman",
 	TASK_FISH = {
 		"Small Flooper", "Small Busser", "Small Lubber", "Small Jawber",
 		"Medium Flooper", "Medium Busser", "Medium Lubber", "Medium Jawber",
@@ -64,9 +63,29 @@ STATE = {
 }
 
 QUEST = {
-	ON = false,
-	SEL = "Fisherman",
-	LIST = { "Fisherman" },
+	AUTO = false,
+	EXPERTISE = false,
+	PICK = {},
+	RIDX = 1,
+	DB = {
+		["Joe"] = { quest = "Crab Hunter", kind = "mob", mobs = { "crab" } },
+		["Chill Billy"] = { quest = "Make'em Chill", kind = "mob", mobs = { "freddy", "bob" } },
+		["Bandits Leader"] = { quest = "No Good Time for Traitors", kind = "mob", mobs = { "bandit traitor" } },
+		["Demon Hunter"] = { quest = "Demon Hunter #1", kind = "mob", mobs = { "cave demon [weakened]" } },
+		["Guard Captain"] = { quest = "Thief Beater", kind = "mob", mobs = { "thief" } },
+		["Fallen Captain"] = { quest = "Fallen Captain's Savior", kind = "mob", mobs = { "bandit" } },
+		["Marge Nospmis"] = { quest = "Rescuing the Brat", kind = "talk", talkNPC = "Bart Nospmis", deliver = "Talk to Bart" },
+		["Old Beggar"] = {
+			quest = "Humble Man #1", kind = "collect",
+			deliverItems = { "Apple", "Banana", "Cantaloupe", "Coconut", "Green Apple", "Melon", "Pumpkin", "Golden Apple" },
+		},
+		["Mad Scientist"] = { quest = "Race Experiments", kind = "deliver", deliverItems = { "Whitebeard Essence" } },
+		["Explorer"] = { quest = "Adventures", kind = "reachAll", noClaim = true },
+		["Traceur"] = { quest = "Bridge Challenge", kind = "reach", pos = { -289, 303, -609 } },
+		["Sam"] = { quest = "Help Sam", kind = "sam", mobs = { "thug" } },
+		["Fisherman"] = { quest = "Fisherman's Favor", kind = "carry", carryItem = "Package" },
+		["Gemologist"] = { quest = "Gem Hunter", kind = "reach", target = "Chests.Gemologist" },
+	},
 }
 
 function isActive()
@@ -295,24 +314,22 @@ function questActive(name)
 	return q and q.Active == name
 end
 
-function fishermanTaskPhase()
-	if qHist(FISH.Q_TASK) or not qHist(FISH.Q_FAVOR) then return false end
-	return true
+function rodQuestActive()
+	return not qHist(FISH.Q_CHALLENGE)
+end
+
+function rodTaskPhase()
+	return qHist(FISH.Q_FAVOR) and not qHist(FISH.Q_TASK)
 end
 
 function fishAllowed()
 	if not FISH.ON then return false end
-	if QUEST.ON and QUEST.SEL == FISH.Q_FISHERMAN and not qHist(FISH.Q_FAVOR) then
-		return false
-	end
+	if not qHist(FISH.Q_FAVOR) then return false end
 	return true
 end
 
 function keepForQuest(name)
-	if not QUEST.ON then return false end
-	local onTask = (QUEST.SEL == FISH.Q_FISHERMAN and fishermanTaskPhase())
-		or (QUEST.SEL == FISH.Q_TASK and not qHist(FISH.Q_TASK))
-	if not onTask then return false end
+	if not FISH.ON or not rodTaskPhase() then return false end
 	if not name then return false end
 	if objNeed(name) then return true end
 	local low = string.lower(name)
@@ -828,39 +845,157 @@ function runChallengeQuest()
 	return true
 end
 
-function runFishermanQuest()
-	if qHist(FISH.Q_CHALLENGE) then
-		local cfg = getgenv().SigmaFishConfig or {}
-		if cfg.AutoQuest then
-			cfg.AutoQuest = false
-			cfg.AutoFish = false
-			getgenv().SigmaFishConfig = cfg
-			QUEST.ON = false
-			FISH.ON = false
-			stopLoop()
-			print("[Sigma Hub] Fisherman chain done — Super Rod claimed, auto stopped")
-		end
-		return false
-	end
+function runRodQuestChain()
+	if qHist(FISH.Q_CHALLENGE) then return false end
 	if not qHist(FISH.Q_FAVOR) then return runFavorQuest() end
 	if not qHist(FISH.Q_TASK) then return runTaskQuest() end
 	return runChallengeQuest()
 end
 
-function questStep()
-	if not QUEST.ON or not QUEST.SEL then return end
-	if QUEST.SEL == FISH.Q_FISHERMAN then runFishermanQuest()
-	elseif QUEST.SEL == FISH.Q_FAVOR then runFavorQuest()
-	elseif QUEST.SEL == FISH.Q_TASK then runTaskQuest()
-	elseif QUEST.SEL == FISH.Q_CHALLENGE then runChallengeQuest()
+function questListAll()
+	local out = {}
+	for npc in pairs(QUEST.DB) do
+		out[#out + 1] = npc
 	end
+	table.sort(out)
+	return out
+end
+
+function normalizeQuestPick(raw)
+	local out, seen = {}, {}
+	if type(raw) == "string" and raw ~= "" then
+		raw = { raw }
+	end
+	if type(raw) ~= "table" then return out end
+	for _, v in ipairs(raw) do
+		local name = type(v) == "table" and (v.Title or v[1]) or v
+		name = tostring(name or "")
+		if name ~= "" and QUEST.DB[name] and not seen[name] then
+			seen[name] = true
+			out[#out + 1] = name
+		end
+	end
+	return out
+end
+
+function activeQuestInList(q, list)
+	for _, npc in ipairs(list or {}) do
+		local info = QUEST.DB[npc]
+		if info and q.Active == info.quest then
+			return npc, info
+		end
+	end
+	return nil, nil
+end
+
+function tryAcceptQuestList(list)
+	local n = #list
+	if n < 1 then return false end
+	for step = 0, n - 1 do
+		local idx = ((QUEST.RIDX - 1 + step) % n) + 1
+		local npc = list[idx]
+		local info = QUEST.DB[npc]
+		if info and info.kind ~= "sam" and info.kind ~= "skip" then
+			local model = findNPC(npc)
+			if model then
+				clickNPC(model)
+				questExec(model, "Accept", info.quest)
+				QUEST.RIDX = (idx % n) + 1
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function deliverQuestItems(npc, info)
+	local model = findNPC(npc)
+	if not model then return false end
+	clickNPC(model)
+	local any = false
+	for _, item in ipairs(info.deliverItems or {}) do
+		if hasItem(item) then
+			questExec(model, "Deliver", item)
+			any = true
+		end
+	end
+	return any
+end
+
+function stepTalkQuest(npc, info)
+	local target = findNPC(info.talkNPC)
+	if not target then return false end
+	clickNPC(target)
+	return questExec(target, "Deliver", info.deliver)
+end
+
+function stepReachQuest(info)
+	if type(info.pos) ~= "table" then return false end
+	local hrp = getHRP()
+	if not hrp then return false end
+	pcall(function()
+		hrp.CFrame = CFrame.new(info.pos[1], info.pos[2], info.pos[3])
+	end)
+	return true
+end
+
+function stepActiveQuest(npc, info)
+	local q = getQuests()
+	if not q then return false end
+	if q.Completed then
+		if info.noClaim then return false end
+		local model = findNPC(npc)
+		if model then clickNPC(model) questExec(model, "Claim") end
+		return true
+	end
+	local kind = info.kind or "mob"
+	if kind == "deliver" or kind == "collect" then
+		return deliverQuestItems(npc, info)
+	elseif kind == "talk" then
+		return stepTalkQuest(npc, info)
+	elseif kind == "carry" then
+		if info.quest == FISH.Q_FAVOR then return runFavorQuest() end
+		if hasItem(info.carryItem or "Package") then return deliverPackage() end
+		local model = findNPC(npc)
+		if model then clickNPC(model) questExec(model, "Accept", info.quest) end
+		return true
+	elseif kind == "reach" then
+		return stepReachQuest(info)
+	elseif kind == "reachAll" then
+		return false
+	end
+	return false
+end
+
+function runQuestList(list)
+	list = normalizeQuestPick(list)
+	if #list < 1 then return end
+	local q = getQuests()
+	if not q then return end
+	local npc, info = activeQuestInList(q, list)
+	if npc then
+		stepActiveQuest(npc, info)
+		return
+	end
+	if q.Active and q.Active ~= "" then
+		for _, name in ipairs(list) do
+			local inf = QUEST.DB[name]
+			if inf and inf.quest == q.Active then return end
+		end
+	end
+	tryAcceptQuestList(list)
+end
+
+function stepExpertiseQuest()
+	runQuestList({ "Old Beggar" })
+end
+
+function stepPickedQuests()
+	runQuestList(QUEST.PICK)
 end
 
 function stashQuestFish()
-	local skip = qHist(FISH.Q_TASK)
-		or (QUEST.SEL == FISH.Q_FISHERMAN and not fishermanTaskPhase())
-		or (QUEST.SEL == FISH.Q_TASK and qHist(FISH.Q_TASK))
-	if not QUEST.ON or skip then return {} end
+	if not FISH.ON or not rodTaskPhase() then return {} end
 	local keep = workspace:FindFirstChild("SigmaFishKeep_" .. player.UserId)
 	if not keep then
 		keep = Instance.new("Folder")
@@ -990,9 +1125,35 @@ function castLoop()
 end
 
 function fishStep()
-	if not fishAllowed() then return end
+	if not FISH.ON then return end
 	hookListeners()
-	if not findRod() then castLoop() return end
+
+	if not qHist(FISH.Q_FAVOR) then
+		if runFavorQuest() then
+			castLoop()
+			return
+		end
+	end
+
+	if not findRod() then
+		equipBestRod()
+		if not findRod() and not qHist(FISH.Q_FAVOR) then
+			castLoop()
+			return
+		end
+		if not findRod() then return end
+	end
+
+	if rodQuestActive() then
+		runRodQuestChain()
+	end
+	equipBestRod()
+
+	if not fishAllowed() then
+		castLoop()
+		return
+	end
+
 	if not STATE.cooking and not lineOut() and not miniOpen() then
 		task.spawn(function() cookAndSell(false) end)
 	end
@@ -1000,7 +1161,7 @@ function fishStep()
 end
 
 function hubRunning()
-	return FISH.ON or QUEST.ON
+	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE
 end
 
 function spawnOpen()
@@ -1030,21 +1191,12 @@ end
 
 function syncCfg()
 	local cfg = getgenv().SigmaFishConfig or {}
-	QUEST.ON = cfg.AutoQuest == true
-	QUEST.SEL = cfg.QuestSelect or FISH.Q_FISHERMAN
-	if QUEST.SEL ~= FISH.Q_FISHERMAN
-		and QUEST.SEL ~= FISH.Q_FAVOR
-		and QUEST.SEL ~= FISH.Q_TASK
-		and QUEST.SEL ~= FISH.Q_CHALLENGE then
-		QUEST.SEL = FISH.Q_FISHERMAN
-	end
-	if QUEST.ON and QUEST.SEL == FISH.Q_FISHERMAN then
-		FISH.ON = true
-	else
-		FISH.ON = cfg.AutoFish == true
-	end
+	FISH.ON = cfg.AutoFish == true
 	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
 	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
+	QUEST.AUTO = cfg.AutoQuest == true
+	QUEST.EXPERTISE = cfg.AutoExpertise == true
+	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
 	if not STATE.cooking then
 		STATE.pause = false
 	end
@@ -1067,7 +1219,11 @@ function hubTick()
 	if not hubRunning() or not isActive() then return end
 	if ensureSpawn() then return end
 	if spawnOpen() or not worldReady() then return end
-	if QUEST.ON then questStep() end
+	if QUEST.EXPERTISE then
+		stepExpertiseQuest()
+	elseif QUEST.AUTO then
+		stepPickedQuests()
+	end
 	if FISH.ON then fishStep() end
 end
 
@@ -1105,24 +1261,30 @@ end
 function SigmaFish.setAutoQuest(on)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoQuest = on == true
-	cfg.QuestSelect = FISH.Q_FISHERMAN
-	if on then
-		cfg.AutoFish = true
-	else
-		cfg.AutoFish = false
-	end
 	getgenv().SigmaFishConfig = cfg
 	STATE.pause = false
 	STATE.cooking = false
 	ensureLoopRunning()
 end
 
-function SigmaFish.setQuestSelect(name)
+function SigmaFish.setQuestPick(names)
 	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.QuestSelect = FISH.Q_FISHERMAN
+	cfg.QuestPick = normalizeQuestPick(names)
 	getgenv().SigmaFishConfig = cfg
-	QUEST.SEL = FISH.Q_FISHERMAN
+	QUEST.PICK = cfg.QuestPick
 	syncCfg()
+end
+
+function SigmaFish.setAutoExpertise(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoExpertise = on == true
+	getgenv().SigmaFishConfig = cfg
+	STATE.pause = false
+	ensureLoopRunning()
+end
+
+function SigmaFish.setQuestSelect(_)
+	-- legacy no-op
 end
 
 function SigmaFish.setAutoCookSell(on)
@@ -1137,10 +1299,7 @@ end
 
 function SigmaFish.applyConfig()
 	local cfg = getgenv().SigmaFishConfig or {}
-	if cfg.AutoQuest then
-		cfg.AutoFish = true
-		cfg.QuestSelect = FISH.Q_FISHERMAN
-	end
+	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
 	getgenv().SigmaFishConfig = cfg
 	STATE.cooking = false
 	STATE.pause = false
@@ -1154,7 +1313,7 @@ function SigmaFish.setSellAt(n)
 end
 
 function SigmaFish.getQuestList()
-	return QUEST.LIST
+	return questListAll()
 end
 
 function SigmaFish.cookSell()
@@ -1166,19 +1325,21 @@ function SigmaFish.getStatus()
 	local q = getQuests()
 	return {
 		autoFish = FISH.ON,
-		autoQuest = QUEST.ON,
-		questSelect = QUEST.SEL,
+		autoQuest = QUEST.AUTO,
+		autoExpertise = QUEST.EXPERTISE,
+		questPick = table.concat(QUEST.PICK, ", "),
+		rodPhase = (not qHist(FISH.Q_FAVOR) and "Favor/Package")
+			or (not qHist(FISH.Q_TASK) and "Task")
+			or (not qHist(FISH.Q_CHALLENGE) and "Challenge")
+			or "Super Rod done",
 		autoCookSell = FISH.AUTO_SELL,
 		sellAt = FISH.SELL_AT,
 		fishCount = STATE.fishCount,
 		inMinigame = STATE.inMini or miniOpen(),
 		questActive = q and q.Active,
 		questDone = qHist(FISH.Q_CHALLENGE),
-		fishermanPhase = (not qHist(FISH.Q_FAVOR) and "Favor")
-			or (not qHist(FISH.Q_TASK) and "Task")
-			or (not qHist(FISH.Q_CHALLENGE) and "Challenge")
-			or "Done",
 		sellable = countSellable(),
+		hasRod = findRod() ~= nil,
 	}
 end
 
@@ -1190,6 +1351,7 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 	getgenv().SigmaFishConfig.AutoFish = false
 	getgenv().SigmaFishConfig.AutoQuest = false
+	getgenv().SigmaFishConfig.AutoExpertise = false
 	STATE.cooking = false
 	STATE.pause = false
 	syncCfg()
@@ -1208,7 +1370,8 @@ do
 	end
 	if cfg.AutoCookSell == nil then cfg.AutoCookSell = true end
 	if cfg.SellAt == nil then cfg.SellAt = 40 end
-	if cfg.QuestSelect == nil then cfg.QuestSelect = FISH.Q_FISHERMAN end
+	if cfg.QuestPick == nil then cfg.QuestPick = {} end
+	if cfg.AutoExpertise == nil then cfg.AutoExpertise = false end
 	syncCfg()
 end
 
