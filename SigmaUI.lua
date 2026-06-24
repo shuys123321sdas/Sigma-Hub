@@ -3,12 +3,7 @@
 
 local SigmaUI = {}
 
-local function uiLog(opts, msg)
-	if opts and opts.log then
-		opts.log(msg)
-	elseif getgenv().SigmaHubLog then
-		getgenv().SigmaHubLog(msg)
-	end
+local function uiLog(_opts, _msg)
 end
 
 local function formatUptime(seconds)
@@ -501,7 +496,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 		CompassTab:Paragraph({
 			Title = "Note",
-			Desc = "Auto Claim Sam mặc định OFF. Auto Find dùng la bàn theo spawner trên map.",
 		})
 
 		autoClaimSamToggle = CompassTab:Toggle({
