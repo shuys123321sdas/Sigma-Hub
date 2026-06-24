@@ -207,11 +207,44 @@ RAYLEIGH = {
 }
 
 SAM = {
-	ON = true,
+	ON = false,
 	PITY_STOP = 99,
 	QUEST = "Help Sam",
 	CLAIM_WAIT = 0.2,
+	COMPASS_POS = Vector3.new(-1272, 221, -1368),
+	DROP_WAIT = 0.3,
+	DROP_TIMEOUT = 10,
 	_actionAt = {},
+}
+
+COMPASS = {
+	FIND_ON = false,
+	DROP_ON = false,
+	LINE_WIDTH = 45,
+	LINE_Y_BAND = 200,
+	XZ_CELL = 40,
+	REVERSE = true,
+	MAX_RAY = 64,
+	MAX_HOPS = 80,
+	HARVEST_WAIT = 0.3,
+	HARVEST_TRIES = 2,
+	CLICK_INTERVAL = 0.06,
+	FAIL_RETRY = 0.5,
+	LOOP_DELAY = 0.5,
+	TP_UP = 0.5,
+	WATER_Y = 80,
+	NEEDLE_AXIS = "up",
+	_spawnerDB = nil,
+	_mouseHeld = false,
+	_noclip = { active = false, saved = {}, conns = {} },
+}
+
+SKILL = {
+	ON = false,
+	ALL_KEYS = { "Z", "X", "C", "V", "B", "N", "F", "G", "H", "J", "K", "L" },
+	HOLD_SEC = 0.5,
+	LOOP_WAIT = 0.15,
+	KEY_GAP = 0.05,
 }
 
 AFFINITY = {
@@ -242,7 +275,6 @@ COMBAT = {
 	ORDER = { "Sword", "Melee" },
 	M1_LOOP_WAIT = 0.15,
 	M1_CLICK_GAP = 0.03,
-	USE_VU_FALLBACK = false,
 	CAT_ALIASES = {
 		Sword = { "Sword", "Swords" },
 		Melee = { "Melee" },
@@ -738,6 +770,341 @@ function stepSam()
 		return true
 	end
 	return samTryAccept("Sam", info)
+end
+
+function samCountCompassTool()
+	local n = 0
+	for _, src in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if src then
+			for _, t in ipairs(src:GetChildren()) do
+				if t:IsA("Tool") and t.Name == "Compass" then n += 1 end
+			end
+		end
+	end
+	return n
+end
+
+function samNextCompassTool()
+	for _, src in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if src then
+			for _, t in ipairs(src:GetChildren()) do
+				if t:IsA("Tool") and t.Name == "Compass" then return t end
+			end
+		end
+	end
+	return nil
+end
+
+function stepCompassDrop()
+	if not COMPASS.DROP_ON then return false end
+	if samCountCompassTool() < 1 then return false end
+	if not samActionReady("drop", 3) then return false end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = getHRP()
+	if not hum or not hrp then return false end
+	if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
+	pcall(function() hrp.CFrame = CFrame.new(SAM.COMPASS_POS) end)
+	task.wait(SAM.DROP_WAIT)
+	local startCount = samCountCompassTool()
+	local deadline = os.clock() + SAM.DROP_TIMEOUT
+	while isActive() and os.clock() < deadline and samCountCompassTool() > 0 do
+		local tool = samNextCompassTool()
+		if not tool then break end
+		if tool.Parent ~= char then
+			pcall(function() hum:EquipTool(tool) end)
+			task.wait(0.08)
+		end
+		if tool.Parent == char and tool.CanBeDropped then
+			pcall(function() tool.Parent = workspace end)
+			task.wait(0.06)
+		end
+	end
+	print(string.format("[Sigma Compass] drop %d->%d", startCount, samCountCompassTool()))
+	return samCountCompassTool() < startCount
+end
+
+function compassSendMouse(down)
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	if UNC.vim then
+		local vs = cam.ViewportSize
+		pcall(function()
+			VirtualInputManager:SendMouseButtonEvent(vs.X * 0.5, vs.Y * 0.5, 0, down, game, 0)
+		end)
+	elseif VirtualUser then
+		pcall(function()
+			if down then VirtualUser:Button1Down(Vector2.zero, cam.CFrame)
+			else VirtualUser:Button1Up(Vector2.zero, cam.CFrame) end
+		end)
+	end
+end
+
+function compassHoldTool()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	local tool = samNextCompassTool()
+	if not tool or not hum then return false end
+	if tool.Parent ~= player.Character then
+		pcall(function() hum:EquipTool(tool) end)
+		task.wait(0.06)
+	end
+	pcall(function() tool:Activate() end)
+	if not COMPASS._mouseHeld then
+		compassSendMouse(true)
+		COMPASS._mouseHeld = true
+	end
+	return true
+end
+
+function compassReleaseMouse()
+	if COMPASS._mouseHeld then
+		compassSendMouse(false)
+		COMPASS._mouseHeld = false
+	end
+end
+
+function compassFlatUnit(v)
+	local f = Vector3.new(v.X, 0, v.Z)
+	if f.Magnitude < 0.02 then return nil end
+	return f.Unit
+end
+
+function compassNeedlePart()
+	local tool = samNextCompassTool() or (player.Character and player.Character:FindFirstChild("Compass"))
+	if not tool then return nil end
+	local n = tool:FindFirstChild("CompassNeedle") or tool:FindFirstChild("Needle")
+	if n then return n end
+	for _, d in ipairs(tool:GetDescendants()) do
+		if d:IsA("BasePart") and string.find(string.lower(d.Name), "needle", 1, true) then
+			return d
+		end
+	end
+	return nil
+end
+
+function compassNeedleLook()
+	local n = compassNeedlePart()
+	if not n then return nil end
+	local ok, raw = pcall(function()
+		if COMPASS.NEEDLE_AXIS == "up" then return n.CFrame.UpVector end
+		if COMPASS.NEEDLE_AXIS == "-up" then return -n.CFrame.UpVector end
+		if COMPASS.NEEDLE_AXIS == "look" then return n.CFrame.LookVector end
+		return n.CFrame.UpVector
+	end)
+	if not ok or not raw then return nil end
+	local d = compassFlatUnit(raw)
+	if COMPASS.REVERSE and d then d = -d end
+	return d
+end
+
+function compassBuildSpawnerDB()
+	if COMPASS._spawnerDB then return COMPASS._spawnerDB end
+	local all = {}
+	local trees = workspace.MapFolder and workspace.MapFolder:FindFirstChild("Trees")
+	if trees then
+		for _, tree in ipairs(trees:GetChildren()) do
+			for _, d in ipairs(tree:GetDescendants()) do
+				if d:IsA("BasePart") and d.Name == "Spawner" then
+					all[#all + 1] = {
+						sp = d, tree = tree.Name, treeInst = tree,
+						pos = d.Position, x = d.Position.X, y = d.Position.Y, z = d.Position.Z,
+					}
+				end
+			end
+		end
+	end
+	COMPASS._spawnerDB = all
+	print(string.format("[Sigma Compass] DB: %d spawner", #all))
+	return all
+end
+
+function compassRayPerp(origin, needle, x, z)
+	local dx, dz = x - origin.X, z - origin.Z
+	local along = dx * needle.X + dz * needle.Z
+	local px, pz = dx - needle.X * along, dz - needle.Z * along
+	return along, math.sqrt(px * px + pz * pz)
+end
+
+function compassBuildLine(origin, needle, refY)
+	refY = refY or origin.Y
+	local candidates = {}
+	for _, e in ipairs(compassBuildSpawnerDB()) do
+		if not e.sp.Parent or not e.treeInst then continue end
+		local along, perp = compassRayPerp(origin, needle, e.x, e.z)
+		if along > 0 and perp <= COMPASS.LINE_WIDTH and math.abs(e.y - refY) <= COMPASS.LINE_Y_BAND then
+			candidates[#candidates + 1] = { entry = e, along = along, perp = perp }
+		end
+	end
+	local byXZ, line, seenTree = {}, {}, {}
+	for _, row in ipairs(candidates) do
+		local key = math.floor(row.entry.x / COMPASS.XZ_CELL) .. "," .. math.floor(row.entry.z / COMPASS.XZ_CELL)
+		local prev = byXZ[key]
+		if not prev or math.abs(row.entry.y - refY) < math.abs(prev.entry.y - refY) then
+			byXZ[key] = row
+		end
+	end
+	for _, row in pairs(byXZ) do
+		if not seenTree[row.entry.treeInst] then
+			seenTree[row.entry.treeInst] = true
+			line[#line + 1] = row
+		end
+	end
+	table.sort(line, function(a, b) return a.along < b.along end)
+	return line
+end
+
+function compassTpStandOn(sp, treeName)
+	local hrp = getHRP()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hrp or not sp or not sp.Parent then return false end
+	local top = (sp.CFrame * CFrame.new(0, sp.Size.Y * 0.5, 0)).Position
+	local hip = hum and hum.HipHeight or 2
+	local y = top.Y + math.max(COMPASS.TP_UP, hip + 0.35)
+	pcall(function() hrp.CFrame = CFrame.new(sp.Position.X, y, sp.Position.Z) end)
+	BRING.zeroVel(hrp)
+	return true
+end
+
+function compassTouchSpawner(sp)
+	local hrp = getHRP()
+	if not hrp or not sp then return end
+	pcall(function()
+		if firetouchinterest then
+			firetouchinterest(hrp, sp, 0)
+			task.wait(0.03)
+			firetouchinterest(hrp, sp, 1)
+		end
+	end)
+end
+
+function compassWaitHarvest(sp, startC)
+	local perTry = COMPASS.HARVEST_WAIT / COMPASS.HARVEST_TRIES
+	for _ = 1, COMPASS.HARVEST_TRIES do
+		if not getgenv().__SIGMA_COMPASS_FIND or samCountCompassTool() < startC then
+			return samCountCompassTool() < startC
+		end
+		compassHoldTool()
+		compassTouchSpawner(sp)
+		local hrp = getHRP()
+		if hrp and sp then
+			pcall(function() hrp.CFrame = CFrame.new(sp.Position.X, hrp.Position.Y, sp.Position.Z) end)
+			BRING.zeroVel(hrp)
+		end
+		task.wait(perTry)
+	end
+	return samCountCompassTool() < startC
+end
+
+function compassHuntOnce(startC)
+	if not compassHoldTool() then return false end
+	for _ = 1, 10 do compassHoldTool(); task.wait(0.1) end
+	local hrp = getHRP()
+	local origin = hrp and hrp.Position
+	if not origin then return false end
+	local needle = compassNeedleLook()
+	if not needle then return false end
+	local line = compassBuildLine(origin, needle, origin.Y)
+	if #line < 1 then return false end
+	local visited, hops = {}, 0
+	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
+		hops += 1
+		compassHoldTool()
+		hrp = getHRP()
+		origin = hrp and hrp.Position
+		if not origin then break end
+		needle = compassNeedleLook() or needle
+		line = compassBuildLine(origin, needle, origin.Y)
+		local row = nil
+		for i, r in ipairs(line) do
+			if i > COMPASS.MAX_RAY then break end
+			if not visited[r.entry.sp] then row = r break end
+		end
+		if not row then break end
+		visited[row.entry.sp] = true
+		compassTpStandOn(row.entry.sp, row.entry.tree)
+		if compassWaitHarvest(row.entry.sp, startC) then
+			print(string.format("[Sigma Compass] picked @ %s", row.entry.tree))
+			return true
+		end
+	end
+	return false
+end
+
+function compassBeginNoclip()
+	if COMPASS._noclip.active then return end
+	COMPASS._noclip.active = true
+	local function apply()
+		local char = player.Character
+		if not char then return end
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") and COMPASS._noclip.saved[p] == nil then
+				COMPASS._noclip.saved[p] = { cc = p.CanCollide }
+				pcall(function() p.CanCollide = false end)
+			end
+		end
+	end
+	apply()
+	COMPASS._noclip.conns.a = RunService.Stepped:Connect(function()
+		if COMPASS._noclip.active then apply() end
+	end)
+end
+
+function compassEndNoclip()
+	COMPASS._noclip.active = false
+	for _, c in pairs(COMPASS._noclip.conns) do
+		if c then pcall(function() c:Disconnect() end) end
+	end
+	COMPASS._noclip.conns = {}
+	for p, was in pairs(COMPASS._noclip.saved) do
+		if p and p.Parent then pcall(function() p.CanCollide = was.cc end) end
+	end
+	COMPASS._noclip.saved = {}
+end
+
+function stopCompassFindLoop()
+	getgenv().__SIGMA_COMPASS_FIND = false
+	compassReleaseMouse()
+	compassEndNoclip()
+end
+
+function refreshCompassFindLoop()
+	if COMPASS.FIND_ON and isActive() then
+		if getgenv().__SIGMA_COMPASS_FIND then return end
+		getgenv().__SIGMA_COMPASS_FIND = true
+		compassBeginNoclip()
+		task.spawn(function()
+			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
+				compassHoldTool()
+				task.wait(COMPASS.CLICK_INTERVAL)
+			end
+			compassReleaseMouse()
+		end)
+		task.spawn(function()
+			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
+				if samCountCompassTool() < 1 then
+					task.wait(2)
+				else
+					local startC = samCountCompassTool()
+					pcall(function() compassHuntOnce(startC) end)
+					task.wait(samCountCompassTool() < startC and 1 or COMPASS.FAIL_RETRY)
+				end
+				task.wait(COMPASS.LOOP_DELAY)
+			end
+			stopCompassFindLoop()
+		end)
+	else
+		stopCompassFindLoop()
+	end
+end
+
+function compassModeEnabled()
+	return SAM.ON or COMPASS.DROP_ON or COMPASS.FIND_ON
+end
+
+function stepCompassFeatures()
+	if SAM.ON and stepSam() then return true end
+	if COMPASS.DROP_ON and stepCompassDrop() then return true end
+	return false
 end
 
 function tpFace(model, dist, up)
@@ -1339,37 +1706,6 @@ function tpNearMob(mob, force)
 	return true
 end
 
-function skillContext(mob)
-	local hrp = getHRP()
-	if not hrp then return nil end
-	local cam = workspace.CurrentCamera
-	local camCf = (cam and cam.CFrame) or hrp.CFrame
-	local cf = hrp.CFrame
-	local target = nil
-	if mob and mob.Parent then
-		target = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
-	end
-	return {
-		RayCFrame = cf,
-		CameraCFrame = camCf,
-		MouseCFrame = cf,
-		RayCFrameIA = cf,
-	}, target
-end
-
-function combatM1Action()
-	return UNC.mobile and "Touch" or "MouseLeftButton"
-end
-
-function fireSkillAction(action, holdTime, mob)
-	local ctx, target = skillContext(mob)
-	if not ctx then return false end
-	local ok1 = exec("SkillCaller", { action, ctx, target, "Start" })
-	task.wait(holdTime or COMBAT.M1_CLICK_GAP)
-	local ok2 = exec("SkillCaller", { action, ctx, target, "End" })
-	return ok1 or ok2
-end
-
 function vuM1Click()
 	if not VirtualUser then return false end
 	local cam = workspace.CurrentCamera
@@ -1384,33 +1720,12 @@ function vuM1Click()
 	return true
 end
 
-function combatAttackOnce(mob)
-	mob = mob or STATE.attackMob
-	ensureCombatReady()
-	if fireSkillAction(combatM1Action(), COMBAT.M1_CLICK_GAP, mob) then
-		return true
-	end
-	local char = player.Character
-	if char then
-		for _, t in ipairs(char:GetChildren()) do
-			if t:IsA("Tool") and isCombatTool(t) then
-				if pcall(function() t:Activate() end) then return true end
-				break
-			end
-		end
-	end
-	if COMBAT.USE_VU_FALLBACK then
-		return vuM1Click()
-	end
-	return false
-end
-
 function m1AttackOnce()
-	return combatAttackOnce()
+	return vuM1Click()
 end
 
 function mobAttackOnce()
-	return combatAttackOnce()
+	return vuM1Click()
 end
 
 function startM1Loop(aliveFn, mob)
@@ -1420,7 +1735,8 @@ function startM1Loop(aliveFn, mob)
 	task.spawn(function()
 		while isActive() and STATE.m1RunId == run do
 			if not aliveFn or aliveFn() then
-				combatAttackOnce(STATE.attackMob)
+				ensureCombatReady()
+				vuM1Click()
 			end
 			task.wait(COMBAT.M1_LOOP_WAIT)
 		end
@@ -2273,7 +2589,7 @@ function useToolClicks(tool, hum, clicks, delay)
 	local n = clicks or 1
 	for i = 1, n do
 		if not isActive() or not tool.Parent then break end
-		if not pcall(function() tool:Activate() end) then combatAttackOnce() end
+		if not pcall(function() tool:Activate() end) then vuM1Click() end
 		if delay and delay > 0 then
 			task.wait(delay)
 		elseif i < n then
@@ -2752,7 +3068,8 @@ function fishStep()
 end
 
 function hubRunning()
-	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON or SAM.ON
+	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON
+		or SAM.ON or COMPASS.DROP_ON or COMPASS.FIND_ON or SKILL.ON
 end
 
 function hakiModeEnabled()
@@ -2892,7 +3209,21 @@ function syncCfg()
 	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
 	HUB.ANTI_AFK = cfg.AntiAfk ~= false
 	HUB.HIDE_NAME = cfg.HideName ~= false
-	SAM.ON = cfg.AutoClaimSam ~= false
+	SAM.ON = cfg.AutoClaimSam == true
+	COMPASS.DROP_ON = cfg.AutoDropCompass == true
+	COMPASS.FIND_ON = cfg.AutoFindSam == true
+	SKILL.ON = cfg.AutoSkill == true
+	SKILL.HOLD_SEC = tonumber(cfg.SkillHoldSec) or 0.5
+	if not COMPASS.FIND_ON then
+		stopCompassFindLoop()
+	else
+		refreshCompassFindLoop()
+	end
+	if not SKILL.ON then
+		stopSkillLoop()
+	else
+		refreshSkillLoop()
+	end
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
 	HAKI.FAST = cfg.FastHaki == true
@@ -3100,6 +3431,78 @@ function pressKeyAction(action, hold)
 		VirtualInputManager:SendKeyEvent(true, kc, false, game)
 		task.wait(hold or 0.03)
 		VirtualInputManager:SendKeyEvent(false, kc, false, game)
+	end)
+end
+
+function skillContext(mob)
+	local hrp = getHRP()
+	if not hrp then return nil end
+	local cam = workspace.CurrentCamera
+	local camCf = (cam and cam.CFrame) or hrp.CFrame
+	local cf = hrp.CFrame
+	local target = nil
+	if mob and mob.Parent then
+		target = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return {
+		RayCFrame = cf,
+		CameraCFrame = camCf,
+		MouseCFrame = cf,
+		RayCFrameIA = cf,
+	}, target
+end
+
+function skillActiveKeys()
+	local cfg = getgenv().SigmaFishConfig or {}
+	local out = {}
+	local picked = cfg.SkillKeys
+	if type(picked) ~= "table" then return out end
+	if picked[1] then
+		for _, k in ipairs(picked) do
+			local key = string.upper(tostring(k))
+			if #key == 1 then out[#out + 1] = key end
+		end
+	else
+		for _, key in ipairs(SKILL.ALL_KEYS) do
+			if picked[key] == true then out[#out + 1] = key end
+		end
+	end
+	return out
+end
+
+function pressSkillKey(key, holdSec)
+	return pressKeyAction(key, holdSec or SKILL.HOLD_SEC)
+end
+
+function stepAutoSkillOnce()
+	local keys = skillActiveKeys()
+	if #keys < 1 then return end
+	for _, key in ipairs(keys) do
+		if not SKILL.ON or not isActive() then break end
+		pressSkillKey(key, SKILL.HOLD_SEC)
+		task.wait(SKILL.KEY_GAP)
+	end
+end
+
+function stopSkillLoop()
+	getgenv().__SIGMA_SKILL_LOOP = false
+end
+
+function refreshSkillLoop()
+	getgenv().__SIGMA_SKILL_LOOP = false
+	if not (SKILL.ON and #skillActiveKeys() > 0 and isActive()) then return end
+	local runId = (getgenv().__SIGMA_SKILL_RUN or 0) + 1
+	getgenv().__SIGMA_SKILL_RUN = runId
+	getgenv().__SIGMA_SKILL_LOOP = true
+	task.spawn(function()
+		while getgenv().__SIGMA_SKILL_LOOP and getgenv().__SIGMA_SKILL_RUN == runId
+			and SKILL.ON and isActive() do
+			stepAutoSkillOnce()
+			task.wait(SKILL.LOOP_WAIT)
+		end
+		if getgenv().__SIGMA_SKILL_RUN == runId then
+			getgenv().__SIGMA_SKILL_LOOP = false
+		end
 	end)
 end
 
@@ -4564,7 +4967,6 @@ function stepHakiFeatures()
 	updateHakiMaxState()
 	local ok, err = pcall(function()
 		if RAYLEIGH.ON and stepRayleigh() then return end
-		if SAM.ON and stepSam() then return end
 		if not hakiModeEnabled() then
 			stepHakiForceOff()
 			return
@@ -4591,7 +4993,7 @@ end
 function featureTick()
 	if not hubRunning() then return end
 	if spawnOpen() or not worldReady() then
-		if hakiModeEnabled() then
+		if hakiModeEnabled() or compassModeEnabled() then
 			hakiLog("gate", string.format(
 				"blocked | spawn=%s worldReady=%s data=%s",
 				tostring(spawnOpen()), tostring(not spawnOpen() and worldReady()), tostring(getData() ~= nil)
@@ -4599,6 +5001,7 @@ function featureTick()
 		end
 		return
 	end
+	if stepCompassFeatures() then return end
 	stepHakiFeatures()
 	if questExpertiseEnabled() then
 		stepExpertiseQuest()
@@ -4762,10 +5165,54 @@ end
 
 function SigmaFish.setAutoClaimSam(on)
 	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.AutoClaimSam = on ~= false
+	cfg.AutoClaimSam = on == true
 	getgenv().SigmaFishConfig = cfg
 	SAM.ON = cfg.AutoClaimSam
 	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoDropCompass(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoDropCompass = on == true
+	getgenv().SigmaFishConfig = cfg
+	COMPASS.DROP_ON = cfg.AutoDropCompass
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoFindSam(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoFindSam = on == true
+	getgenv().SigmaFishConfig = cfg
+	COMPASS.FIND_ON = cfg.AutoFindSam
+	if COMPASS.FIND_ON then
+		refreshCompassFindLoop()
+	else
+		stopCompassFindLoop()
+	end
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoSkill(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoSkill = on == true
+	getgenv().SigmaFishConfig = cfg
+	SKILL.ON = cfg.AutoSkill
+	if SKILL.ON then refreshSkillLoop() else stopSkillLoop() end
+	ensureLoopRunning()
+end
+
+function SigmaFish.setSkillKeys(keys)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.SkillKeys = keys or {}
+	getgenv().SigmaFishConfig = cfg
+	if SKILL.ON then refreshSkillLoop() end
+end
+
+function SigmaFish.setSkillHoldSec(sec)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.SkillHoldSec = tonumber(sec) or 0.5
+	getgenv().SigmaFishConfig = cfg
+	SKILL.HOLD_SEC = cfg.SkillHoldSec
 end
 
 function SigmaFish.setAutoKenbunshoku(on)
@@ -4867,7 +5314,12 @@ function SigmaFish.applyConfig()
 	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
 	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
 	if cfg.HideName == nil then cfg.HideName = true end
-	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = true end
+	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = false end
+	if cfg.AutoDropCompass == nil then cfg.AutoDropCompass = false end
+	if cfg.AutoFindSam == nil then cfg.AutoFindSam = false end
+	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
+	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
+	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
 	getgenv().SigmaFishConfig = cfg
 	QUEST.PICK = cfg.QuestPick
 	local wantAuto = cfg.AutoQuest == true
@@ -4905,13 +5357,34 @@ function SigmaFish.applyConfig()
 	if not wantAff then stopAffinityLoop() end
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
 	local wantHide = cfg.HideName ~= false
-	local wantSam = cfg.AutoClaimSam ~= false
+	local wantSam = cfg.AutoClaimSam == true
+	local wantDrop = cfg.AutoDropCompass == true
+	local wantFind = cfg.AutoFindSam == true
+	local wantSkill = cfg.AutoSkill == true
 	if wantHide ~= (HUB.HIDE_NAME == true) and SigmaFish.setHideName then
 		SigmaFish.setHideName(wantHide)
 	elseif wantHide then HUB.HIDE_NAME = true end
 	if wantSam ~= SAM.ON and SigmaFish.setAutoClaimSam then
 		SigmaFish.setAutoClaimSam(wantSam)
 	elseif wantSam then SAM.ON = true end
+	if wantDrop ~= COMPASS.DROP_ON and SigmaFish.setAutoDropCompass then
+		SigmaFish.setAutoDropCompass(wantDrop)
+	elseif wantDrop then COMPASS.DROP_ON = true end
+	if wantFind ~= COMPASS.FIND_ON and SigmaFish.setAutoFindSam then
+		SigmaFish.setAutoFindSam(wantFind)
+	elseif wantFind then
+		COMPASS.FIND_ON = true
+		refreshCompassFindLoop()
+	end
+	if wantSkill ~= SKILL.ON and SigmaFish.setAutoSkill then
+		SigmaFish.setAutoSkill(wantSkill)
+	elseif wantSkill then
+		SKILL.ON = true
+		SKILL.HOLD_SEC = tonumber(cfg.SkillHoldSec) or 0.5
+		refreshSkillLoop()
+	end
+	if not wantSkill then stopSkillLoop() end
+	if not wantFind then stopCompassFindLoop() end
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
@@ -4983,6 +5456,16 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig.FastHaki = false
 	getgenv().SigmaFishConfig.AutoRayleigh = false
 	getgenv().SigmaFishConfig.AutoAffinity = false
+	getgenv().SigmaFishConfig.AutoClaimSam = false
+	getgenv().SigmaFishConfig.AutoDropCompass = false
+	getgenv().SigmaFishConfig.AutoFindSam = false
+	getgenv().SigmaFishConfig.AutoSkill = false
+	SAM.ON = false
+	COMPASS.DROP_ON = false
+	COMPASS.FIND_ON = false
+	SKILL.ON = false
+	stopCompassFindLoop()
+	stopSkillLoop()
 	HAKI.AUTO_KEN = false
 	HAKI.AUTO_BUSO = false
 	HAKI.FAST = false
@@ -5019,7 +5502,12 @@ do
 	if cfg.FastHaki == nil then cfg.FastHaki = false end
 	if cfg.AutoRayleigh == nil then cfg.AutoRayleigh = false end
 	if cfg.HideName == nil then cfg.HideName = true end
-	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = true end
+	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = false end
+	if cfg.AutoDropCompass == nil then cfg.AutoDropCompass = false end
+	if cfg.AutoFindSam == nil then cfg.AutoFindSam = false end
+	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
+	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
+	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	syncCfg()
