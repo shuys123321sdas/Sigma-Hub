@@ -1,4 +1,4 @@
---[[ SigmaUI — Fishing + Quest tabs ]]
+--[[ SigmaUI — Fishing + Quest + Haki tabs ]]
 -- SIGMA_MODULE=ui
 
 local SigmaUI = {}
@@ -81,6 +81,10 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoSpawn = cfg.AutoSpawn ~= false
 	cfg.AntiAfk = cfg.AntiAfk ~= false
 	cfg.AutoReloadConfig = cfg.AutoReloadConfig ~= false
+	cfg.AutoKenbunshoku = cfg.AutoKenbunshoku == true
+	cfg.AutoBusoshoku = cfg.AutoBusoshoku == true
+	cfg.FastHaki = cfg.FastHaki == true
+	cfg.AutoRayleigh = cfg.AutoRayleigh == true
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
 	cfg.QuestPick = cfg.QuestPick or {}
 	cfg.Theme = cfg.Theme or "Sigma"
@@ -142,7 +146,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	local function saveConfig()
 		if not configFile or not configFile.Save then
-			notify(hub, "Config", "Config system không khả dụng (Studio / no writefile)", "triangle-alert")
+			notify(hub, "Config", "Config system unavailable", "triangle-alert")
 			return false
 		end
 		persistConfigMeta()
@@ -150,17 +154,17 @@ function SigmaUI.build(hub, Fish, opts)
 			configFile:Save()
 		end)
 		if ok then
-			notify(hub, "Config", "Đã lưu SigmaHub/config/sigma-fish.json", "save", 3)
+			notify(hub, "Config", "Saved sigma-fish.json", "save", 3)
 			return true
 		end
-		notify(hub, "Config", "Lưu thất bại: " .. tostring(err), "triangle-alert", 4)
+		notify(hub, "Config", "Save failed: " .. tostring(err), "triangle-alert", 4)
 		return false
 	end
 
 	local function loadConfig(silent)
 		if not configFile or not configFile.Load then
 			if not silent then
-				notify(hub, "Config", "Config system không khả dụng", "triangle-alert")
+				notify(hub, "Config", "Config system unavailable", "triangle-alert")
 			end
 			return false
 		end
@@ -169,7 +173,7 @@ function SigmaUI.build(hub, Fish, opts)
 		end)
 		if not ok then
 			if not silent then
-				notify(hub, "Config", "Load thất bại: " .. tostring(err), "triangle-alert", 4)
+				notify(hub, "Config", "Load failed: " .. tostring(err), "triangle-alert", 4)
 			end
 			return false
 		end
@@ -187,7 +191,7 @@ function SigmaUI.build(hub, Fish, opts)
 			pcall(function() Fish.applyConfig() end)
 		end
 		if not silent then
-			notify(hub, "Config", "Đã load config", "folder-open", 3)
+			notify(hub, "Config", "Config loaded", "folder-open", 3)
 		end
 		return true
 	end
@@ -196,11 +200,13 @@ function SigmaUI.build(hub, Fish, opts)
 	local MainTab = Window:Tab({ Title = "Main", Icon = "house" })
 	local FishTab = Window:Tab({ Title = "Fishing", Icon = "fish" })
 	local QuestTab = Window:Tab({ Title = "Quest", Icon = "list" })
+	local HakiTab = Window:Tab({ Title = "Haki", Icon = "zap" })
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
 	uiLog(opts, "Populating tab controls (sync)...")
 	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
 	local autoSpawnToggle, antiAfkToggle, themeDropdown, autoReloadToggle
+	local autoKenToggle, autoBusoToggle, fastHakiToggle, autoRayleighToggle
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -218,7 +224,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoSpawnToggle = MainTab:Toggle({
 			Title = "Auto Spawn",
-			Desc = "Tự bấm Spawn khi vào game (màn Load)",
 			Value = cfg.AutoSpawn ~= false,
 			Default = true,
 			Flag = "Sigma_AutoSpawn",
@@ -232,7 +237,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 		antiAfkToggle = MainTab:Toggle({
 			Title = "Anti AFK",
-			Desc = "Chống kick AFK (VirtualUser + chặn hop + nhảy định kỳ)",
 			Value = cfg.AntiAfk ~= false,
 			Default = true,
 			Flag = "Sigma_AntiAfk",
@@ -248,12 +252,11 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoFishToggle = FishTab:Toggle({
 			Title = "Auto Fish",
-			Desc = "Câu tại chỗ + tự làm quest rod (Package→Wood→Task→Sturdy→Challenge→Super) + equip rod tốt nhất",
 			Value = cfg.AutoFish,
 			Flag = "Sigma_AutoFish",
 			Callback = function(v)
 				if not Fish or not Fish.setAutoFish then
-					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
+					notify(hub, "Fishing", "Backend not loaded", "triangle-alert")
 					return
 				end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
@@ -265,20 +268,18 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoCookToggle = FishTab:Toggle({
 			Title = "Auto Cook + Sell",
-			Desc = "Cook + sell từ xa (không TP bếp/Cooker)",
 			Value = cfg.AutoCookSell,
 			Flag = "Sigma_AutoCookSell",
 			Callback = function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoCookSell = v == true
 				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
-				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
+				notify(hub, "Cook + Sell", v and "ON" or "OFF", "utensils", 2)
 			end,
 		})
 
 		FishTab:Slider({
-			Title = "Cook + Sell Every Fish",
-			Desc = "Số cá tối thiểu để auto cook + sell",
+			Title = "Cook + Sell Threshold",
 			Value = { Min = 5, Max = 80, Default = cfg.SellAt },
 			Flag = "Sigma_FishSellAt",
 			Callback = function(v)
@@ -288,24 +289,23 @@ function SigmaUI.build(hub, Fish, opts)
 		})
 
 		FishTab:Button({
-			Title = "Cook Fish + Sell Fish",
+			Title = "Cook + Sell Now",
 			Icon = "utensils",
 			Color = PRIMARY,
 			Callback = function()
 				if not Fish or not Fish.cookSell then
-					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
+					notify(hub, "Fishing", "Backend not loaded", "triangle-alert")
 					return
 				end
 				Fish.cookSell()
-				notify(hub, "Cook+Sell", "Done", "utensils", 2)
+				notify(hub, "Cook + Sell", "Done", "utensils", 2)
 			end,
 		})
 
 		QuestTab:Section({ Title = "Auto Quest", Icon = "list", Box = true, BoxBorder = true })
 
 		questDropdown = QuestTab:Dropdown({
-			Title = "Select Quests",
-			Desc = "Chọn nhiều quest — bật Auto Quest để tự làm",
+			Title = "Quest List",
 			Values = questOptions,
 			Value = cfg.QuestPick,
 			Multi = true,
@@ -319,12 +319,11 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoQuestToggle = QuestTab:Toggle({
 			Title = "Auto Quest",
-			Desc = "Tự accept / deliver / claim / farm mob quest đã chọn",
 			Value = cfg.AutoQuest,
 			Flag = "Sigma_AutoQuest",
 			Callback = function(v)
 				if not Fish or not Fish.setAutoQuest then
-					notify(hub, "Quest", "Main.lua chưa load", "triangle-alert")
+					notify(hub, "Quest", "Backend not loaded", "triangle-alert")
 					return
 				end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
@@ -338,35 +337,76 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoExpertiseToggle = QuestTab:Toggle({
 			Title = "Auto Expertise",
-			Desc = "Chỉ làm quest Old Beggar (Humble Man #1) — giao trái cây từ xa",
 			Value = cfg.AutoExpertise,
 			Flag = "Sigma_AutoExpertise",
 			Callback = function(v)
 				if not Fish or not Fish.setAutoExpertise then
-					notify(hub, "Expertise", "Main.lua chưa load", "triangle-alert")
+					notify(hub, "Expertise", "Backend not loaded", "triangle-alert")
 					return
 				end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoExpertise = v == true
 				Fish.setAutoExpertise(v)
-				notify(hub, "Expertise", v and "ON — Old Beggar" or "OFF", "book-open", 2)
+				notify(hub, "Auto Expertise", v and "ON" or "OFF", "book-open", 2)
 			end,
 		})
 
-		QuestTab:Paragraph({
-			Title = "Ghi chú",
-			Desc = table.concat({
-				"Auto Fish: tự quest rod Fisherman (clone chưa rod → Package trước).",
-				"Auto Quest: tự làm quest đã chọn (accept, farm mob, deliver, claim).",
-				"Auto Expertise: chỉ Old Beggar, tách khỏi Auto Quest.",
-			}, "\n"),
+		HakiTab:Section({ Title = "Haki Toggle", Icon = "eye", Box = true, BoxBorder = true })
+
+		autoKenToggle = HakiTab:Toggle({
+			Title = "Auto Kenbunshoku",
+			Value = cfg.AutoKenbunshoku,
+			Flag = "Sigma_AutoKenbunshoku",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoKenbunshoku = v == true
+				if Fish and Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(v) end
+				notify(hub, "Kenbunshoku", v and "ON" or "OFF", "eye", 2)
+			end,
+		})
+
+		autoBusoToggle = HakiTab:Toggle({
+			Title = "Auto Busoshoku",
+			Value = cfg.AutoBusoshoku,
+			Flag = "Sigma_AutoBusoshoku",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoBusoshoku = v == true
+				if Fish and Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(v) end
+				notify(hub, "Busoshoku", v and "ON" or "OFF", "shield", 2)
+			end,
+		})
+
+		HakiTab:Section({ Title = "Farm", Icon = "zap", Box = true, BoxBorder = true })
+
+		fastHakiToggle = HakiTab:Toggle({
+			Title = "Fast Haki",
+			Value = cfg.FastHaki,
+			Flag = "Sigma_FastHaki",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.FastHaki = v == true
+				if Fish and Fish.setFastHaki then Fish.setFastHaki(v) end
+				notify(hub, "Fast Haki", v and "ON" or "OFF", "zap", 2)
+			end,
+		})
+
+		autoRayleighToggle = HakiTab:Toggle({
+			Title = "Auto Rayleigh",
+			Value = cfg.AutoRayleigh,
+			Flag = "Sigma_AutoRayleigh",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoRayleigh = v == true
+				if Fish and Fish.setAutoRayleigh then Fish.setAutoRayleigh(v) end
+				notify(hub, "Auto Rayleigh", v and "ON" or "OFF", "sparkles", 2)
+			end,
 		})
 
 		SettingsTab:Section({ Title = "Appearance", Icon = "palette", Box = true, BoxBorder = true })
 
 		themeDropdown = SettingsTab:Dropdown({
 			Title = "Theme",
-			Desc = "Đổi màu giao diện WindUI",
 			Values = themes,
 			Value = cfg.Theme,
 			Flag = "Sigma_Theme",
@@ -399,7 +439,6 @@ function SigmaUI.build(hub, Fish, opts)
 
 		autoReloadToggle = SettingsTab:Toggle({
 			Title = "Auto Load Config",
-			Desc = "Tự load config đã lưu mỗi lần mở hub",
 			Value = cfg.AutoReloadConfig ~= false,
 			Default = true,
 			Flag = "Sigma_AutoReloadConfig",
@@ -431,11 +470,6 @@ function SigmaUI.build(hub, Fish, opts)
 				end)
 			end,
 		})
-
-		SettingsTab:Paragraph({
-			Title = "Config path",
-			Desc = "SigmaHub/SigmaHub/config/sigma-fish.json",
-		})
 	end)
 
 	if not populateOk then
@@ -449,11 +483,12 @@ function SigmaUI.build(hub, Fish, opts)
 		Main = countElements(MainTab),
 		Fishing = countElements(FishTab),
 		Quest = countElements(QuestTab),
+		Haki = countElements(HakiTab),
 		Settings = countElements(SettingsTab),
 	}
 	uiLog(opts, string.format(
-		"Elements — Main:%d Fishing:%d Quest:%d Settings:%d",
-		counts.Main, counts.Fishing, counts.Quest, counts.Settings
+		"Elements — Main:%d Fishing:%d Quest:%d Haki:%d Settings:%d",
+		counts.Main, counts.Fishing, counts.Quest, counts.Haki, counts.Settings
 	))
 
 	getgenv().__SIGMA_UI_COUNTS = counts
@@ -468,37 +503,27 @@ function SigmaUI.build(hub, Fish, opts)
 		task.wait(0.85)
 		if not Fish or not Fish.applyConfig then return end
 		local c = getgenv().SigmaFishConfig or {}
-		if autoFishToggle and autoFishToggle.Value ~= nil then
-			c.AutoFish = autoFishToggle.Value == true
-		end
-		if autoQuestToggle and autoQuestToggle.Value ~= nil then
-			c.AutoQuest = autoQuestToggle.Value == true
-		end
-		if autoExpertiseToggle and autoExpertiseToggle.Value ~= nil then
-			c.AutoExpertise = autoExpertiseToggle.Value == true
-		end
-		if autoCookToggle and autoCookToggle.Value ~= nil then
-			c.AutoCookSell = autoCookToggle.Value ~= false
-		end
-		if autoSpawnToggle and autoSpawnToggle.Value ~= nil then
-			c.AutoSpawn = autoSpawnToggle.Value == true
-		end
-		if antiAfkToggle and antiAfkToggle.Value ~= nil then
-			c.AntiAfk = antiAfkToggle.Value == true
-		end
-		if autoReloadToggle and autoReloadToggle.Value ~= nil then
-			c.AutoReloadConfig = autoReloadToggle.Value == true
-		end
-		if themeDropdown and themeDropdown.Value ~= nil then
-			c.Theme = themeDropdown.Value
-		end
-		if questDropdown and questDropdown.Value ~= nil then
-			c.QuestPick = questDropdown.Value
-		end
+		if autoFishToggle and autoFishToggle.Value ~= nil then c.AutoFish = autoFishToggle.Value == true end
+		if autoQuestToggle and autoQuestToggle.Value ~= nil then c.AutoQuest = autoQuestToggle.Value == true end
+		if autoExpertiseToggle and autoExpertiseToggle.Value ~= nil then c.AutoExpertise = autoExpertiseToggle.Value == true end
+		if autoCookToggle and autoCookToggle.Value ~= nil then c.AutoCookSell = autoCookToggle.Value ~= false end
+		if autoSpawnToggle and autoSpawnToggle.Value ~= nil then c.AutoSpawn = autoSpawnToggle.Value == true end
+		if antiAfkToggle and antiAfkToggle.Value ~= nil then c.AntiAfk = antiAfkToggle.Value == true end
+		if autoReloadToggle and autoReloadToggle.Value ~= nil then c.AutoReloadConfig = autoReloadToggle.Value == true end
+		if themeDropdown and themeDropdown.Value ~= nil then c.Theme = themeDropdown.Value end
+		if questDropdown and questDropdown.Value ~= nil then c.QuestPick = questDropdown.Value end
+		if autoKenToggle and autoKenToggle.Value ~= nil then c.AutoKenbunshoku = autoKenToggle.Value == true end
+		if autoBusoToggle and autoBusoToggle.Value ~= nil then c.AutoBusoshoku = autoBusoToggle.Value == true end
+		if fastHakiToggle and fastHakiToggle.Value ~= nil then c.FastHaki = fastHakiToggle.Value == true end
+		if autoRayleighToggle and autoRayleighToggle.Value ~= nil then c.AutoRayleigh = autoRayleighToggle.Value == true end
 		getgenv().SigmaFishConfig = c
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
 		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
+		if Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(c.AutoKenbunshoku == true) end
+		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
+		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
+		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
@@ -508,6 +533,7 @@ function SigmaUI.build(hub, Fish, opts)
 		hideEmptyPlaceholder(MainTab)
 		hideEmptyPlaceholder(FishTab)
 		hideEmptyPlaceholder(QuestTab)
+		hideEmptyPlaceholder(HakiTab)
 		hideEmptyPlaceholder(SettingsTab)
 
 		if Window.SelectTab and MainTab.Index then
