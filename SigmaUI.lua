@@ -25,10 +25,10 @@ local function safeStatusText(Fish)
 	local s = result
 	return table.concat({
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
-		"Quest: " .. tostring(s.questSelect or "-"),
-		"Active: " .. tostring(s.questActive or "-"),
-		"Done: " .. (s.questDone and "yes" or "no"),
+		"Auto Fisherman: " .. (s.autoQuest and "ON" or "OFF"),
+		"Phase: " .. tostring(s.fishermanPhase or "-"),
+		"Active quest: " .. tostring(s.questActive or "-"),
+		"Super Rod done: " .. (s.questDone and "yes" or "no"),
 		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
 		"Sell at: " .. tostring(s.sellAt or "?"),
 		"Minigame: " .. (s.inMinigame and "active" or "idle"),
@@ -72,14 +72,8 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoQuest = cfg.AutoQuest == true
 	cfg.AutoCookSell = cfg.AutoCookSell ~= false
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
-	cfg.QuestSelect = cfg.QuestSelect or "Fisherman's Challenge"
+	cfg.QuestSelect = "Fisherman"
 	getgenv().SigmaFishConfig = cfg
-
-	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {
-		"Fisherman's Favor",
-		"Fisherman's Task",
-		"Fisherman's Challenge",
-	}
 
 	uiLog(opts, "CreateWindow...")
 	local Window = hub:CreateWindow({
@@ -123,6 +117,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	-- Populate đồng bộ (task.defer trên một số executor không chạy → tab trống)
 	uiLog(opts, "Populating tab controls (sync)...")
+	local autoFishToggle, autoCookToggle, autoQuestToggle
 	local populateOk, populateErr = pcall(function()
 		local statusPara = MainTab:Paragraph({
 			Title = "Status",
@@ -142,9 +137,9 @@ function SigmaUI.build(hub, Fish, opts)
 
 		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
 
-		FishTab:Toggle({
+		autoFishToggle = FishTab:Toggle({
 			Title = "Auto Fish",
-			Desc = "Quăng câu tại chỗ đang đứng",
+			Desc = "Quăng câu tại chỗ (chỉ câu thường). Auto Fisherman bật thì tự bật câu.",
 			Value = cfg.AutoFish,
 			Flag = "Sigma_AutoFish",
 			Callback = function(v)
@@ -152,20 +147,23 @@ function SigmaUI.build(hub, Fish, opts)
 					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
 					return
 				end
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoFish = v == true
 				Fish.setAutoFish(v)
 				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
 				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
-		FishTab:Toggle({
+		autoCookToggle = FishTab:Toggle({
 			Title = "Auto Cook + Sell",
 			Desc = "Cook + sell từ xa (không TP bếp/Cooker)",
 			Value = cfg.AutoCookSell,
 			Flag = "Sigma_AutoCookSell",
 			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoCookSell = v == true
 				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
-				getgenv().SigmaFishConfig.AutoCookSell = v
 				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
 				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
@@ -197,24 +195,11 @@ function SigmaUI.build(hub, Fish, opts)
 			end,
 		})
 
-		QuestTab:Section({ Title = "Fisherman Quest", Icon = "list", Box = true, BoxBorder = true })
+		QuestTab:Section({ Title = "Fisherman", Icon = "list", Box = true, BoxBorder = true })
 
-		QuestTab:Dropdown({
-			Title = "Select Quest",
-			Desc = "Chọn quest cần auto",
-			Values = questOptions,
-			Value = cfg.QuestSelect,
-			Flag = "Sigma_QuestSelect",
-			Callback = function(v)
-				if Fish and Fish.setQuestSelect then Fish.setQuestSelect(v) end
-				getgenv().SigmaFishConfig.QuestSelect = v
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
-			end,
-		})
-
-		QuestTab:Toggle({
-			Title = "Auto Quest",
-			Desc = "Accept / deliver / claim từ xa (không TP Fisherman)",
+		autoQuestToggle = QuestTab:Toggle({
+			Title = "Auto Fisherman",
+			Desc = "Tự làm hết chuỗi quest → Super Rod: accept, câu, giao, claim. Bật = auto câu. Tắt = tắt câu.",
 			Value = cfg.AutoQuest,
 			Flag = "Sigma_AutoQuest",
 			Callback = function(v)
@@ -223,18 +208,19 @@ function SigmaUI.build(hub, Fish, opts)
 					return
 				end
 				Fish.setAutoQuest(v)
-				getgenv().SigmaFishConfig.AutoQuest = v
-				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
+				notify(hub, "Fisherman", v and "ON — auto câu + quest" or "OFF — đã tắt câu", "list", 2)
 				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
 		QuestTab:Paragraph({
-			Title = "Quest chain",
+			Title = "Chuỗi quest",
 			Desc = table.concat({
-				"Fisherman's Favor → Wood Rod (giao Package)",
-				"Fisherman's Task → Sturdy Rod (giao cá quest)",
-				"Fisherman's Challenge → Super Rod (câu + claim)",
+				"1. Fisherman's Favor → nhận & giao Package → Wood Rod",
+				"2. Fisherman's Task → câu & giao cá quest → Sturdy Rod",
+				"3. Fisherman's Challenge → câu đủ số → Super Rod",
+				"",
+				"Chỉ cần bật Auto Fisherman — đứng yên, script tự làm hết.",
 			}, "\n"),
 		})
 
@@ -269,6 +255,26 @@ function SigmaUI.build(hub, Fish, opts)
 	))
 
 	getgenv().__SIGMA_UI_COUNTS = counts
+
+	-- WindUI ConfigManager load toggle không gọi Callback → sync backend sau khi config apply
+	task.spawn(function()
+		task.wait(0.85)
+		if not Fish or not Fish.applyConfig then return end
+		local c = getgenv().SigmaFishConfig or {}
+		if autoFishToggle and autoFishToggle.Value ~= nil then
+			c.AutoFish = autoFishToggle.Value == true
+		end
+		if autoQuestToggle and autoQuestToggle.Value ~= nil then
+			c.AutoQuest = autoQuestToggle.Value == true
+		end
+		if autoCookToggle and autoCookToggle.Value ~= nil then
+			c.AutoCookSell = autoCookToggle.Value ~= false
+		end
+		c.QuestSelect = "Fisherman"
+		getgenv().SigmaFishConfig = c
+		Fish.applyConfig()
+		uiLog(opts, "Config synced from UI toggles")
+	end)
 
 	-- Chọn tab Main + ẩn empty placeholder sau khi WindUI spawn xong
 	task.spawn(function()
