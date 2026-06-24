@@ -68,7 +68,7 @@ STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
-	m1RunId = 0,
+	m1RunId = 0, antiAfkRunId = 0,
 }
 
 QUEST = {
@@ -1877,10 +1877,21 @@ function ensureSpawn()
 	return true
 end
 
-function setupAntiAfk()
-	if HUB.ANTI_AFK == false then return end
+function disableAntiAfk()
+	STATE.antiAfkRunId = (STATE.antiAfkRunId or 0) + 1
 	local old = getgenv().__SIGMA_AntiAfkConn
 	if old then pcall(function() old:Disconnect() end) end
+	getgenv().__SIGMA_AntiAfkConn = nil
+end
+
+function setupAntiAfk()
+	if HUB.ANTI_AFK == false then
+		disableAntiAfk()
+		return
+	end
+	disableAntiAfk()
+	STATE.antiAfkRunId = (STATE.antiAfkRunId or 0) + 1
+	local myAfk = STATE.antiAfkRunId
 	getgenv().__SIGMA_AntiAfkConn = player.Idled:Connect(function()
 		if UNC.vuser then
 			pcall(function()
@@ -1898,15 +1909,19 @@ function setupAntiAfk()
 			end
 		end
 	end)
-	local myRun = RUN.id
 	task.spawn(function()
-		while isActive() and getgenv().__SIGMA_HUB_RUN_ID == myRun do
+		while isActive() and STATE.antiAfkRunId == myAfk and HUB.ANTI_AFK do
 			task.wait(HUB.ANTI_AFK_JUMP)
-			if not (isActive() and getgenv().__SIGMA_HUB_RUN_ID == myRun) then break end
+			if not (isActive() and STATE.antiAfkRunId == myAfk and HUB.ANTI_AFK) then break end
 			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 			if hum then pcall(function() hum.Jump = true end) end
 		end
 	end)
+end
+
+function refreshHubServices()
+	syncCfg()
+	if HUB.ANTI_AFK then setupAntiAfk() else disableAntiAfk() end
 end
 
 function worldReady()
@@ -2036,12 +2051,29 @@ function SigmaFish.setAutoCookSell(on)
 	ensureLoopRunning()
 end
 
+function SigmaFish.setAutoSpawn(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoSpawn = on ~= false
+	getgenv().SigmaFishConfig = cfg
+	syncCfg()
+end
+
+function SigmaFish.setAntiAfk(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AntiAfk = on ~= false
+	getgenv().SigmaFishConfig = cfg
+	refreshHubServices()
+end
+
 function SigmaFish.applyConfig()
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
+	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
+	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
 	getgenv().SigmaFishConfig = cfg
 	STATE.cooking = false
 	STATE.pause = false
+	refreshHubServices()
 	ensureLoopRunning()
 end
 
