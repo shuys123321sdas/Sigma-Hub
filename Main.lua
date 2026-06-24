@@ -96,6 +96,13 @@ CACHE = {
 	DROP_WAIT = 0.06,
 	TICK = 0.4,
 	_lastTick = 0,
+	CONSUME_MATCH = {
+		"smoothie", "cider", "juice", "lemonade", "milk",
+		"apple", "banana", "cantaloupe", "coconut", "melon", "pumpkin", "pear", "prickly",
+	},
+	CONSUME_BLOCK = {
+		"grapple", "package", "melee", "essence", "compass", "cache", "rod",
+	},
 }
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
@@ -2720,16 +2727,21 @@ end
 
 function isMiscConsumableName(name)
 	name = tostring(name or "")
-	if name == "" or name == "Package" then return false end
-	if isGoldenAppleName(name) or isPearName(name) then return true end
-	if string.find(name, "Lemonade", 1, true) then return true end
+	if name == "" then return false end
+	local low = string.lower(name)
+	for _, b in ipairs(CACHE.CONSUME_BLOCK) do
+		if string.find(low, b, 1, true) then return false end
+	end
+	for _, m in ipairs(CACHE.CONSUME_MATCH) do
+		if string.find(low, m, 1, true) then return true end
+	end
 	if string.find(name, "+", 1, true) then return true end
 	return false
 end
 
 function isMiscConsumableTool(tool)
 	if not tool or not tool:IsA("Tool") then return false end
-	if isCombatTool(tool) or isGrappleTool(tool) or isFishRodTool(tool) then return false end
+	if isGrappleTool(tool) or isFishRodTool(tool) then return false end
 	if isCacheTypeTool(tool) then return false end
 	return isMiscConsumableName(tool.Name)
 end
