@@ -1143,6 +1143,10 @@ function refreshCompassFindLoop()
 		compassBeginNoclip()
 		task.spawn(function()
 			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
+				if not worldReady() then
+					task.wait(0.35)
+					continue
+				end
 				compassHoldTool()
 				task.wait(COMPASS.CLICK_INTERVAL)
 			end
@@ -1150,6 +1154,10 @@ function refreshCompassFindLoop()
 		end)
 		task.spawn(function()
 			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
+				if not worldReady() then
+					task.wait(0.35)
+					continue
+				end
 				if samCountCompassTool() < 1 then
 					task.wait(2)
 				else
@@ -1803,12 +1811,10 @@ function startM1Loop(aliveFn, mob)
 	local run = STATE.m1RunId + 1
 	STATE.m1RunId = run
 	task.spawn(function()
-		while isActive() and STATE.m1RunId == run do
-			if not aliveFn or aliveFn() then
-				ensureCombatReady()
-				vuM1Click()
-			end
-			task.wait(COMBAT.M1_LOOP_WAIT)
+		while isActive() and STATE.m1RunId == run and task.wait(COMBAT.M1_LOOP_WAIT) do
+			if aliveFn and not aliveFn() then continue end
+			ensureCombatReady()
+			vuM1Click()
 		end
 	end)
 	return run
@@ -3500,10 +3506,15 @@ function worldReady()
 	if spawnOpen() then return false end
 	if not player or not player:FindFirstChild("PlayerGui") then return false end
 	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not char then return false end
+	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 or not getHRP() then return false end
 	if not getData() then return false end
 	return workspace:FindFirstChild("Alive") or workspace:FindFirstChild("MapFolder")
+end
+
+function hubFeaturesReady()
+	return isActive() and worldReady()
 end
 
 function syncCfg()
@@ -3873,6 +3884,10 @@ function refreshSkillLoop()
 	task.spawn(function()
 		while getgenv().__SIGMA_SKILL_LOOP and getgenv().__SIGMA_SKILL_RUN == runId
 			and SKILL.ON and isActive() do
+			if not worldReady() then
+				task.wait(0.35)
+				continue
+			end
 			local keys = skillActiveKeys()
 			if #keys < 1 then break end
 			stepAutoSkillOnce()
@@ -5451,26 +5466,12 @@ function setupWhitelistGuard()
 end
 
 function serviceTick()
-	if HUB.AUTO_SPAWN then
-		if ensureSpawn() then return end
-	end
 	dropGrappleTools()
-	if isActive() and worldReady() then
-		stepCacheFeatures()
-	end
+	stepCacheFeatures()
 end
 
 function featureTick()
 	if not hubRunning() then return end
-	if spawnOpen() or not worldReady() then
-		if hakiModeEnabled() or compassModeEnabled() then
-			hakiLog("gate", string.format(
-				"blocked | spawn=%s worldReady=%s data=%s",
-				tostring(spawnOpen()), tostring(not spawnOpen() and worldReady()), tostring(getData() ~= nil)
-			), 5)
-		end
-		return
-	end
 	if stepCompassFeatures() then return end
 	stepHakiFeatures()
 	if questExpertiseEnabled() then
@@ -5486,11 +5487,15 @@ end
 
 function hubTick()
 	syncCfg()
+	if not isActive() then return end
+	if spawnOpen() then
+		if HUB.AUTO_SPAWN then ensureSpawn() end
+		return
+	end
+	if not worldReady() then return end
 	stepHideName()
 	if REJOIN.ON then stepWhitelistKick() end
-	if not isActive() then return end
 	serviceTick()
-	if spawnOpen() then return end
 	featureTick()
 end
 
