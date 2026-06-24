@@ -188,15 +188,19 @@ function questExec(fm, ...)
 	return exec("QuestEvents", { ... })
 end
 
+function remoteNPC(model)
+	if not model then return false end
+	setMerchant(model)
+	return true
+end
+
 function clickNPC(model)
-	if not model then return end
-	tpNear(model)
+	if not remoteNPC(model) then return end
 	local part = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart", true)
 	if not part then return end
-	setMerchant(model)
 	local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
 	if cd and fireclickdetector then pcall(fireclickdetector, cd) end
-	task.wait(0.15)
+	task.wait(0.05)
 end
 
 function tpFace(model, dist, up)
@@ -787,17 +791,80 @@ function deliverQuestFish()
 	return true
 end
 
+function normQuest(s)
+	return string.lower(string.gsub(tostring(s or ""), "[^%w%s]", ""))
+end
+
+function activeObjectiveTokens()
+	local tokens, seen = {}, {}
+	local q = getQuests()
+	if q and type(q.Objectives) == "table" then
+		for name in pairs(q.Objectives) do
+			for word in string.gmatch(normQuest(name), "%w+") do
+				if #word >= 3 and not seen[word] then
+					seen[word] = true
+					tokens[#tokens + 1] = word
+				end
+			end
+		end
+	end
+	return tokens
+end
+
+function findPackageReceiver()
+	local skip = {
+		deliver = true, package = true, quest = true, fisherman = true,
+		favor = true, friend = true, give = true, the = true, and = true,
+	}
+	local tokens = activeObjectiveTokens()
+	local root = workspace:FindFirstChild("Ignore")
+	root = root and root:FindFirstChild("NPCs")
+	if not root then return nil end
+	for _, m in root:GetDescendants() do
+		if m:IsA("Model") and m.Name ~= FISH.FISHERMAN then
+			local n = normQuest(m.Name)
+			for _, tk in ipairs(tokens) do
+				if not skip[tk] and string.find(n, tk, 1, true) then
+					return m
+				end
+			end
+		end
+	end
+	return nil
+end
+
+function tryRemoteCarryDeliver(model, item)
+	if not model or not hasItem(item) then return false end
+	equipItem(item)
+	questExec(model, "Deliver", item)
+	task.wait(0.08)
+	if questDone() or not hasItem(item) then return true end
+	local q = getQuests()
+	if q and type(q.Objectives) == "table" then
+		for objName in pairs(q.Objectives) do
+			questExec(model, "Deliver", objName)
+			task.wait(0.05)
+			if questDone() or not hasItem(item) then return true end
+		end
+	end
+	setMerchant(model)
+	useTool(player.Character and player.Character:FindFirstChild(item))
+	task.wait(0.1)
+	return questDone() or not hasItem(item)
+end
+
 function deliverPackage()
+	if not hasItem("Package") then return false end
+	if os.clock() - (STATE.lastDeliver or 0) < 0.6 then return false end
+	STATE.lastDeliver = os.clock()
+	equipItem("Package")
+	local recv = findPackageReceiver()
+	if recv and tryRemoteCarryDeliver(recv, "Package") then return true end
+	local fm = findNPC(FISH.FISHERMAN)
+	if fm and tryRemoteCarryDeliver(fm, "Package") then return true end
 	for _, t in ipairs(receiverNPCs()) do
 		if questDone() or not hasItem("Package") then break end
-		equipItem("Package")
-		local t0 = tick()
-		while tick() - t0 < 0.35 and isActive() do
-			tpFace(t.model, 4, 1)
-			useTool(player.Character and player.Character:FindFirstChild("Package"))
-			task.wait(0.1)
-			if questDone() or not hasItem("Package") then break end
-		end
+		if tryRemoteCarryDeliver(t.model, "Package") then return true end
 	end
 	return questDone()
 end
@@ -897,9 +964,7 @@ function tryAcceptQuestList(list)
 		local info = QUEST.DB[npc]
 		if info and info.kind ~= "sam" and info.kind ~= "skip" then
 			local model = findNPC(npc)
-			if model then
-				clickNPC(model)
-				questExec(model, "Accept", info.quest)
+			if model and questExec(model, "Accept", info.quest) then
 				QUEST.RIDX = (idx % n) + 1
 				return true
 			end
@@ -911,7 +976,6 @@ end
 function deliverQuestItems(npc, info)
 	local model = findNPC(npc)
 	if not model then return false end
-	clickNPC(model)
 	local any = false
 	for _, item in ipairs(info.deliverItems or {}) do
 		if hasItem(item) then
@@ -925,18 +989,11 @@ end
 function stepTalkQuest(npc, info)
 	local target = findNPC(info.talkNPC)
 	if not target then return false end
-	clickNPC(target)
 	return questExec(target, "Deliver", info.deliver)
 end
 
 function stepReachQuest(info)
-	if type(info.pos) ~= "table" then return false end
-	local hrp = getHRP()
-	if not hrp then return false end
-	pcall(function()
-		hrp.CFrame = CFrame.new(info.pos[1], info.pos[2], info.pos[3])
-	end)
-	return true
+	return false
 end
 
 function stepActiveQuest(npc, info)
@@ -945,7 +1002,7 @@ function stepActiveQuest(npc, info)
 	if q.Completed then
 		if info.noClaim then return false end
 		local model = findNPC(npc)
-		if model then clickNPC(model) questExec(model, "Claim") end
+		if model then questExec(model, "Claim") end
 		return true
 	end
 	local kind = info.kind or "mob"
@@ -957,7 +1014,7 @@ function stepActiveQuest(npc, info)
 		if info.quest == FISH.Q_FAVOR then return runFavorQuest() end
 		if hasItem(info.carryItem or "Package") then return deliverPackage() end
 		local model = findNPC(npc)
-		if model then clickNPC(model) questExec(model, "Accept", info.quest) end
+		if model then questExec(model, "Accept", info.quest) end
 		return true
 	elseif kind == "reach" then
 		return stepReachQuest(info)
