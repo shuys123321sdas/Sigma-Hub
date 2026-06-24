@@ -1,4 +1,4 @@
---[[ Main.lua — Sigma Hub fishing (compact) ]]
+--[[ Main.lua — Sigma Hub fishing (stand still, cast in place) ]]
 
 if type(getgenv) ~= "function" then getgenv = function() return _G end end
 if type(task) ~= "table" then task = { wait = wait, spawn = function(f) coroutine.wrap(f)() end } end
@@ -9,7 +9,6 @@ getgenv().SigmaConfig = CFG
 
 Players = game:GetService("Players")
 ReplicatedFirst = game:GetService("ReplicatedFirst")
-UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
 VirtualInputManager = game:GetService("VirtualInputManager")
@@ -17,10 +16,9 @@ player = Players.LocalPlayer
 
 RUN = { id = 0 }
 FISH = {
-	ON = false, SUPER = false,
-	SELL_AT = 15, LOOP_DELAY = 0.25,
+	ON = false, SUPER = false, AUTO_SELL = true,
+	SELL_AT = 40, LOOP_DELAY = 0.25,
 	CAST_TIMEOUT = 4, BITE_TIMEOUT = 30, REEL_TIMEOUT = 4,
-	MIXER_PATH = "MapFolder.StrangeTent.Model.JuicingBowl.Mixer1",
 	COOK_PATH = "MapFolder.Island8.Kitchen.Cooking.CookingStation",
 	FISHERMAN = "Fisherman", COOKER = "Cooker", ROD_CAT = "Utility",
 	RODS = { "Super Rod", "Sturdy Rod", "Wood Rod" },
@@ -34,7 +32,6 @@ FISH = {
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
-	spotPos = nil, spotKind = nil,
 }
 
 function isActive()
@@ -56,8 +53,7 @@ function getData()
 end
 
 function getQuests()
-	local d = getData()
-	return d and d.Quests
+	return getData() and getData().Quests
 end
 
 function qHist(name)
@@ -131,6 +127,13 @@ function setMerchant(model)
 	if cur and cur:IsA("ObjectValue") then cur.Value = model end
 end
 
+function questExec(fm, ...)
+	if not fm then return false end
+	setMerchant(fm)
+	task.wait(0.05)
+	return exec("QuestEvents", { ... })
+end
+
 function clickNPC(model)
 	if not model then return end
 	tpNear(model)
@@ -166,13 +169,12 @@ function equipItem(name)
 end
 
 function useTool(tool)
+	if not tool or not tool:IsA("Tool") then return end
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if tool and tool:IsA("Tool") then
-		if hum then pcall(function() hum:EquipTool(tool) end) end
-		if not pcall(function() tool:Activate() end) and VirtualUser then
-			local cam = workspace.CurrentCamera
-			if cam then pcall(function() VirtualUser:Button1Down(Vector2.zero, cam.CFrame) VirtualUser:Button1Up(Vector2.zero, cam.CFrame) end) end
-		end
+	if hum then pcall(function() hum:EquipTool(tool) end) end
+	if not pcall(function() tool:Activate() end) and VirtualUser then
+		local cam = workspace.CurrentCamera
+		if cam then pcall(function() VirtualUser:Button1Down(Vector2.zero, cam.CFrame) VirtualUser:Button1Up(Vector2.zero, cam.CFrame) end) end
 	end
 end
 
@@ -228,10 +230,7 @@ end
 
 function equipRod(name)
 	if not name then return findRod() end
-	if findTool(name) then
-		exec("Equip", { name, FISH.ROD_CAT })
-		task.wait(0.3)
-	end
+	if findTool(name) then exec("Equip", { name, FISH.ROD_CAT }) task.wait(0.3) end
 	return findRod()
 end
 
@@ -255,8 +254,6 @@ function scanFish()
 	end
 	return out
 end
-
-function countFish() return #scanFish() end
 
 function superMode()
 	return FISH.SUPER and not qHist(FISH.Q_CHALLENGE)
@@ -353,14 +350,14 @@ function btnBright(btn)
 end
 
 function miniButtons(gui)
-	local best, n = {}, 0
+	local out = {}
 	for _, d in ipairs(gui:GetDescendants()) do
 		if d:IsA("TextButton") and d:FindFirstChild("TextLabel") and d.Visible then
 			local s = math.min(d.AbsoluteSize.X, d.AbsoluteSize.Y)
-			if s > 40 then table.insert(best, d) n += 1 end
+			if s > 40 then table.insert(out, d) end
 		end
 	end
-	return best
+	return out
 end
 
 function pickMiniBtn(gui)
@@ -415,8 +412,7 @@ function hookListeners()
 	if STATE.listeners then return end
 	STATE.listeners = true
 	local function listen(r)
-		if not r or not r:IsA("RemoteEvent") then return end
-		if r.Name == "DataEvent" then
+		if r and r:IsA("RemoteEvent") and r.Name == "DataEvent" then
 			pcall(function()
 				r.OnClientEvent:Connect(function(_, val, path)
 					if path == "Stats.Fish" and type(val) == "number" then STATE.fishCount = val end
@@ -440,40 +436,12 @@ function hookListeners()
 	end
 end
 
-function goSpot()
-	if superMode() then
-		if STATE.spotKind ~= "fm" then STATE.spotPos, STATE.spotKind = nil, "fm" end
-		if not STATE.spotPos then
-			local fm = findNPC(FISH.FISHERMAN)
-			if fm then STATE.spotPos = getPos(fm) end
-		end
-	else
-		if STATE.spotKind ~= "mix" then STATE.spotPos, STATE.spotKind = nil, "mix" end
-		if not STATE.spotPos then
-			local mix = resolvePath(FISH.MIXER_PATH)
-			if mix then tpNear(mix) STATE.spotPos = getHRP() and getHRP().Position end
-		end
-	end
-	local hrp, pos = getHRP(), STATE.spotPos
-	if hrp and pos and (hrp.Position - pos).Magnitude > 18 then
-		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end)
-	end
-end
-
 function deliverQuestFish()
 	local fm = findNPC(FISH.FISHERMAN)
 	if not fm then return false end
-	local any = false
-	for _, fishName in ipairs(FISH.TASK_FISH) do
-		if objNeed(fishName) and findTool(fishName) then any = true break end
-	end
-	if not any then return false end
-	STATE.spotPos = getPos(fm)
-	local hrp, pos = getHRP(), STATE.spotPos
-	if hrp and pos and (hrp.Position - pos).Magnitude > 16 then clickNPC(fm) else setMerchant(fm) end
 	for _, fishName in ipairs(FISH.TASK_FISH) do
 		if objNeed(fishName) and findTool(fishName) then
-			exec("QuestEvents", { "Deliver", fishName })
+			questExec(fm, "Deliver", fishName)
 			task.wait(0.08)
 		end
 	end
@@ -488,10 +456,9 @@ function deliverPackage()
 		local t0 = tick()
 		while tick() - t0 < 0.35 and isActive() do
 			tpFace(t.model, 4, 1)
-			local tool = player.Character and player.Character:FindFirstChild("Package")
-			useTool(tool)
+			useTool(player.Character and player.Character:FindFirstChild("Package"))
 			task.wait(0.1)
-			if questDone() or not hasItem("Package") then return true end
+			if questDone() or not hasItem("Package") then break end
 		end
 	end
 	return questDone()
@@ -504,22 +471,14 @@ function stepFavor()
 	local active = q.Active
 
 	if active == FISH.Q_FAVOR and q.Completed then
-		clickNPC(fm) exec("QuestEvents", { "Claim" })
+		questExec(fm, "Claim")
 		task.wait(0.3) equipRod("Wood Rod") return true
 	end
-
-	if active == FISH.Q_FAVOR and hasItem("Package") then
-		STATE.spotPos = getPos(fm)
-		return deliverPackage()
-	end
-
+	if active == FISH.Q_FAVOR and hasItem("Package") then return deliverPackage() end
 	if active == FISH.Q_FAVOR and not hasItem("Package") and not q.Completed then
-		clickNPC(fm) exec("QuestEvents", { "Accept", FISH.Q_FAVOR }) return true
+		questExec(fm, "Accept", FISH.Q_FAVOR) return true
 	end
-
-	if active ~= FISH.Q_FAVOR then
-		clickNPC(fm) exec("QuestEvents", { "Accept", FISH.Q_FAVOR }) return true
-	end
+	if active ~= FISH.Q_FAVOR then questExec(fm, "Accept", FISH.Q_FAVOR) return true end
 	return false
 end
 
@@ -527,24 +486,21 @@ function stepSuperQuest()
 	local q, fm = getQuests(), findNPC(FISH.FISHERMAN)
 	if not q or not fm then return false end
 	local active = q.Active
-	STATE.spotPos = getPos(fm)
 
 	if active == FISH.Q_CHALLENGE then
-		if q.Completed then clickNPC(fm) exec("QuestEvents", { "Claim" }) equipRod("Super Rod") return true end
+		if q.Completed then questExec(fm, "Claim") equipRod("Super Rod") return true end
 		return false
 	end
-
 	if active == FISH.Q_TASK then
-		if q.Completed then clickNPC(fm) exec("QuestEvents", { "Claim" }) equipRod("Sturdy Rod") return true end
+		if q.Completed then questExec(fm, "Claim") equipRod("Sturdy Rod") return true end
 		if os.clock() - STATE.lastDeliver >= 3 then deliverQuestFish() end
 		return false
 	end
-
 	if qHist(FISH.Q_FAVOR) and not qHist(FISH.Q_TASK) and active ~= FISH.Q_FAVOR and active ~= FISH.Q_TASK then
-		clickNPC(fm) exec("QuestEvents", { "Accept", FISH.Q_TASK }) return true
+		questExec(fm, "Accept", FISH.Q_TASK) return true
 	end
 	if qHist(FISH.Q_TASK) and not qHist(FISH.Q_CHALLENGE) and active ~= FISH.Q_CHALLENGE and active ~= FISH.Q_TASK then
-		clickNPC(fm) exec("QuestEvents", { "Accept", FISH.Q_CHALLENGE }) return true
+		questExec(fm, "Accept", FISH.Q_CHALLENGE) return true
 	end
 	return false
 end
@@ -570,13 +526,20 @@ function restoreFish(stashed)
 	for _, t in ipairs(stashed) do if t and t.Parent then pcall(function() t.Parent = bp end) end end
 end
 
-function cookAndSell()
-	if countSellable() < FISH.SELL_AT then return false end
+function cookAndSell(force)
+	if not force then
+		if not FISH.AUTO_SELL then return false end
+		if countSellable() < FISH.SELL_AT then return false end
+		if os.clock() - STATE.lastSell < 2 then return false end
+	end
+	if countSellable() < 1 and not force then return false end
+
 	STATE.pause = true
 	local stashed = stashQuestFish()
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if hum then pcall(function() hum:UnequipTools() end) end
 	task.wait(0.1)
+
 	local station = resolvePath(FISH.COOK_PATH)
 	if station then
 		tpNear(station)
@@ -584,13 +547,14 @@ function cookAndSell()
 		if cd and fireclickdetector then for _ = 1, 3 do pcall(fireclickdetector, cd) task.wait(0.12) end end
 	end
 	task.wait(0.3)
+
 	local cooker = findNPC(FISH.COOKER)
 	if cooker then clickNPC(cooker) exec("SellFish", {}) end
+
 	STATE.lastSell = os.clock()
 	restoreFish(stashed)
 	equipBestRod()
 	STATE.pause = false
-	goSpot()
 	return true
 end
 
@@ -634,14 +598,10 @@ function fishStep()
 	if not findRod() then equipRod("Wood Rod") end
 	if not findRod() then castLoop() return end
 
-	goSpot()
-
 	if superMode() then stepSuperQuest() end
 
 	if not STATE.pause and not lineOut() and not STATE.inMini then
-		if countSellable() >= FISH.SELL_AT and os.clock() - STATE.lastSell > 2 then
-			cookAndSell()
-		end
+		cookAndSell(false)
 	end
 
 	castLoop()
@@ -676,9 +636,9 @@ function syncCfg()
 	local cfg = getgenv().SigmaFishConfig or {}
 	FISH.ON = cfg.AutoFish == true
 	FISH.SUPER = cfg.AutoSuperRod == true
-	FISH.SELL_AT = tonumber(cfg.SellAt) or (FISH.SUPER and 40 or 15)
+	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
+	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
 	STATE.pause = not FISH.ON
-	if FISH.SUPER and FISH.ON then STATE.spotKind = nil end
 end
 
 function fishTick()
@@ -723,12 +683,15 @@ end
 function SigmaFish.setAutoSuperRod(on)
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 	getgenv().SigmaFishConfig.AutoSuperRod = on == true
-	if on then
-		getgenv().SigmaFishConfig.AutoFish = true
-		STATE.spotKind = nil
-	end
+	if on then getgenv().SigmaFishConfig.AutoFish = true end
 	syncCfg()
 	startLoop()
+end
+
+function SigmaFish.setAutoCookSell(on)
+	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+	getgenv().SigmaFishConfig.AutoCookSell = on == true
+	syncCfg()
 end
 
 function SigmaFish.setSellAt(n)
@@ -737,16 +700,22 @@ function SigmaFish.setSellAt(n)
 	syncCfg()
 end
 
+function SigmaFish.cookSell()
+	return cookAndSell(true)
+end
+
 function SigmaFish.getStatus()
 	syncCfg()
 	return {
 		autoFish = FISH.ON,
 		autoSuperRod = FISH.SUPER,
+		autoCookSell = FISH.AUTO_SELL,
 		sellAt = FISH.SELL_AT,
 		fishCount = STATE.fishCount,
 		inMinigame = STATE.inMini,
 		superMode = superMode(),
 		quest = getQuests() and getQuests().Active,
+		sellable = countSellable(),
 	}
 end
 
