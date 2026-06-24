@@ -80,7 +80,10 @@ STATE = {
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
 	collectSweep = nil, spawnAt = 0,
 	hakiFastRunning = false,
+	hakiWasFull = false,
 	hakiLastStack = nil,
+	hakiDrainAmount = nil,
+	hakiDrainSince = nil,
 }
 
 QUEST = {
@@ -128,8 +131,9 @@ HAKI = {
 	FAST = false,
 	FULL_RATIO = 0.995,
 	EMPTY_RATIO = 0.03,
-	FAST_EMPTY = 0.01,
-	FAST_CD = 10,
+	FAST_EMPTY = 0.015,
+	FAST_CD = 0,
+	DRAIN_RESET_SEC = 5,
 	STOP_LEVEL = 0,
 	MIN_MOB_LEVEL = 150,
 	MIN_Y = 210.6,
@@ -161,8 +165,8 @@ BRING = {
 	MOB_ANCHOR = true,
 	MOB_SOFT = false,
 	CLUSTER_RADIUS = 100,
-	CLUSTER_TP_Y = 3,
-	CLUSTER_CENTER_Y = 3,
+	CLUSTER_TP_Y = 0,
+	CLUSTER_CENTER_Y = 0,
 	CLUSTER_TP_WAIT = 0.15,
 	CLUSTER_STACK_WAIT = 0.2,
 	CLUSTER_STACK_DIST = 5,
@@ -2539,6 +2543,8 @@ function syncCfg()
 	end
 	if not HAKI.FAST then
 		STATE.hakiFastRunning = false
+		STATE.hakiWasFull = false
+		hakiClearDrainWatch()
 		if hakiReleaseFarm then hakiReleaseFarm() end
 	end
 	if not RAYLEIGH.ON then
@@ -3038,6 +3044,18 @@ function BRING.ensureHoldLoop()
 	end))
 end
 
+function BRING.tpAtMob(model)
+	local hrp = getHRP()
+	local mobRoot = model and BRING.mobRoot(model)
+	if not hrp or not mobRoot then return false end
+	local pos = mobRoot.Position
+	local cf = CFrame.new(pos)
+	pcall(function() hrp.CFrame = cf end)
+	BRING.zeroVel(hrp)
+	BRING.setHold(cf)
+	return true
+end
+
 function BRING.tpNearMob(model)
 	local hrp = getHRP()
 	local mobRoot = model and BRING.mobRoot(model)
@@ -3283,36 +3301,51 @@ function hakiEnsureTarget()
 	return target
 end
 
+function hakiStackAtMob(target)
+	if not target then return 0 end
+	BRING.tpAtMob(target)
+	local opts = hakiBringOpts()
+	local added = BRING.pullMobsInRadius(opts)
+	local brought = BRING.run({ haki = true })
+	return math.max(added, brought)
+end
+
 function hakiFarmBringTarget(target, stackNow)
 	if not target then return nil, 0 end
 	local now = os.clock()
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if hum then pcall(function() hum:UnequipTools() end) end
 	local brought = 0
-	if stackNow or not STATE.hakiLastStack or (now - STATE.hakiLastStack) >= 8 then
-		local n = BRING.stackClusterNear(target, hakiBringOpts())
+	if stackNow or not BRING.holdActive or not STATE.hakiLastStack or (now - STATE.hakiLastStack) >= 8 then
+		brought = hakiStackAtMob(target)
 		STATE.hakiLastStack = now
 		local holds = 0
 		for _ in pairs(BRING.mobHolds) do holds += 1 end
 		hakiLog("fast:stack", string.format(
-			"stacked %d mobs @ %s | anchor=%s holds=%d",
-			n, target.Name, tostring(BRING.holdActive), holds
+			"at mob %s Y=%.1f | anchor=%s bring=%d holds=%d",
+			target.Name,
+			(getPos(target) and getPos(target).Y) or 0,
+			tostring(BRING.holdActive), brought, holds
 		), 3)
 	elseif not BRING.holdActive then
-		BRING.tpUnderMob(target)
+		BRING.tpAtMob(target)
+		brought = BRING.run({ haki = true })
+	else
+		brought = BRING.run({ haki = true })
 	end
 	BRING.startNearPull(hakiBringOpts())
-	brought = BRING.run({ haki = true })
-	if BRING.NEAR_PULL then BRING.pullMobsInRadius(hakiBringOpts()) end
+	if BRING.NEAR_PULL then
+		brought = math.max(brought, BRING.pullMobsInRadius(hakiBringOpts()))
+	end
 	return target, brought
 end
 
 function tpHakiNearMob(mob)
-	return BRING.tpUnderMob(mob)
+	return BRING.tpAtMob(mob)
 end
 
 function tpUnderMob(mob)
-	return BRING.tpUnderMob(mob)
+	return BRING.tpAtMob(mob)
 end
 
 function hakiGoToFarmSpot(forceTp)
@@ -3332,14 +3365,44 @@ function hakiGoToFarmSpot(forceTp)
 	return target
 end
 
+function hakiBarLowForRejoin(ratio, amount, cap, pct)
+	if pct <= 1 then return true end
+	if amount and cap and amount <= math.max(1, math.ceil(cap * 0.01)) then return true end
+	return ratio ~= nil and ratio <= HAKI.FAST_EMPTY
+end
+
+function hakiClearDrainWatch()
+	STATE.hakiDrainAmount = nil
+	STATE.hakiDrainSince = nil
+end
+
+function hakiDrainStuck(amount, now)
+	if amount == nil then
+		hakiClearDrainWatch()
+		return false
+	end
+	if STATE.hakiDrainAmount == nil then
+		STATE.hakiDrainAmount = amount
+		STATE.hakiDrainSince = now
+		return false
+	end
+	if amount < STATE.hakiDrainAmount then
+		STATE.hakiDrainAmount = amount
+		STATE.hakiDrainSince = now
+		return false
+	end
+	return (now - (STATE.hakiDrainSince or now)) >= HAKI.DRAIN_RESET_SEC
+end
+
 function tryHakiRejoin()
-	local now = os.clock()
 	if STATE.hakiFastPending then return true end
-	if (now - (STATE.hakiLastRejoin or 0)) < HAKI.FAST_CD then return true end
 	STATE.hakiFastPending = true
-	STATE.hakiLastRejoin = now
+	STATE.hakiLastRejoin = os.clock()
 	STATE.hakiFastRunning = false
+	STATE.hakiWasFull = false
+	hakiClearDrainWatch()
 	hakiReleaseFarm()
+	print("[Sigma Haki] fast:rejoin -> TeleportService:Teleport(game.PlaceId)")
 	pcall(function() TeleportService:Teleport(game.PlaceId) end)
 	return true
 end
@@ -3414,6 +3477,8 @@ function stepFastHaki()
 	if not HAKI.FAST then
 		if BRING.holdActive or next(BRING.mobHolds) then hakiReleaseFarm() end
 		STATE.hakiFastRunning = false
+		STATE.hakiWasFull = false
+		hakiClearDrainWatch()
 		return false
 	end
 	if not isActive() then
@@ -3435,6 +3500,24 @@ function stepFastHaki()
 		return false
 	end
 	local pct = math.floor(ratio * 100 + 0.5)
+	local now = os.clock()
+	if (STATE.hakiFastRunning or STATE.hakiWasFull) and hakiBarLowForRejoin(ratio, amount, cap, pct) then
+		hakiLog("fast:rejoin", string.format("bar <= %d%% (%d/%d) -> Teleport rejoin", pct, amount or 0, cap or 0), 1)
+		return tryHakiRejoin()
+	end
+	if (STATE.hakiFastRunning or STATE.hakiWasFull)
+		and ratio < HAKI.FULL_RATIO
+		and not hakiBarLowForRejoin(ratio, amount, cap, pct)
+		and hakiDrainStuck(amount, now) then
+		print(string.format(
+			"[Sigma Haki] fast:stuck bar %d/%d unchanged %ds -> Teleport reset",
+			amount or 0, cap or 0, HAKI.DRAIN_RESET_SEC
+		))
+		return tryHakiRejoin()
+	end
+	if not ((STATE.hakiFastRunning or STATE.hakiWasFull) and ratio < HAKI.FULL_RATIO) then
+		hakiClearDrainWatch()
+	end
 	local target = hakiEnsureTarget()
 	if not target then
 		hakiLog("fast:nomob", string.format(
@@ -3445,16 +3528,13 @@ function stepFastHaki()
 	end
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
+		STATE.hakiWasFull = true
 		local _, brought = hakiFarmBringTarget(target, not BRING.holdActive)
 		hakiLog("fast:full", string.format(
 			"bar full %d%% (%d/%d) | bring=%d anchor=%s mob=%s",
 			pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive), target.Name
 		), 3)
 		return true
-	end
-	if STATE.hakiFastRunning and ratio <= HAKI.FAST_EMPTY then
-		hakiLog("fast:rejoin", string.format("bar <= %d%% (%d/%d) -> Teleport rejoin", pct, amount or 0, cap or 0), 2)
-		return tryHakiRejoin()
 	end
 	local _, brought = hakiFarmBringTarget(target, not BRING.holdActive or not STATE.hakiLastStack)
 	hakiLog("fast:fill", string.format(
@@ -4078,6 +4158,9 @@ function startHubLoop()
 	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
 		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function()
 			STATE.hakiFastPending = false
+			STATE.hakiFastRunning = false
+			STATE.hakiWasFull = false
+			hakiClearDrainWatch()
 		end)
 	end
 	task.spawn(function()
@@ -4218,6 +4301,8 @@ function SigmaFish.setFastHaki(on)
 	if not HAKI.FAST then
 		if hakiReleaseFarm then hakiReleaseFarm() end
 		STATE.hakiFastRunning = false
+		STATE.hakiWasFull = false
+		hakiClearDrainWatch()
 	else
 		print("[Sigma Haki] Fast Haki ON")
 		print("[Sigma Haki]", hakiDiagSnapshot())
