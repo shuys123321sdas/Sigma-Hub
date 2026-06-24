@@ -1,4 +1,4 @@
---[[ SigmaUI — Fishing tab (Auto Fish / Auto Chest / Cook+Sell) ]]
+--[[ SigmaUI — Fishing + Quest tabs ]]
 
 local SigmaUI = {}
 
@@ -9,11 +9,12 @@ local function statusText(Fish)
 	local s = Fish.getStatus()
 	return table.concat({
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
-		"Auto Chest: " .. (s.autoSuperRod and "ON" or "OFF"),
+		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
+		"Quest: " .. tostring(s.questSelect or "-"),
+		"Active: " .. tostring(s.questActive or "-"),
+		"Done: " .. (s.questDone and "yes" or "no"),
 		"Auto Cook+Sell: " .. (s.autoCookSell and "ON" or "OFF"),
-		"Sell at: " .. tostring(s.sellAt or "?") .. " fish",
-		"Sellable: " .. tostring(s.sellable or "?"),
-		"Quest: " .. tostring(s.quest or "-"),
+		"Sell at: " .. tostring(s.sellAt or "?"),
 		"Minigame: " .. (s.inMinigame and "active" or "idle"),
 	}, "\n")
 end
@@ -27,14 +28,21 @@ function SigmaUI.build(hub, Fish, opts)
 
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoFish = cfg.AutoFish == true
-	cfg.AutoSuperRod = cfg.AutoSuperRod == true
+	cfg.AutoQuest = cfg.AutoQuest == true
 	cfg.AutoCookSell = cfg.AutoCookSell ~= false
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
+	cfg.QuestSelect = cfg.QuestSelect or "Fisherman's Challenge"
 	getgenv().SigmaFishConfig = cfg
+
+	local questOptions = (Fish and Fish.getQuestList and Fish.getQuestList()) or {
+		"Fisherman's Favor",
+		"Fisherman's Task",
+		"Fisherman's Challenge",
+	}
 
 	local Window = hub:CreateWindow({
 		Title = "Sigma Hub",
-		Author = "One Piece: Final · Fishing",
+		Author = "One Piece: Final",
 		Icon = "fish",
 		Folder = "SigmaHub",
 		Theme = "Sigma",
@@ -67,6 +75,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	local MainTab = Window:Tab({ Title = "Main", Icon = "house" })
 	local FishTab = Window:Tab({ Title = "Fishing", Icon = "fish" })
+	local QuestTab = Window:Tab({ Title = "Quest", Icon = "scroll" })
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
 	task.defer(function()
@@ -86,6 +95,7 @@ function SigmaUI.build(hub, Fish, opts)
 			},
 		})
 
+		-- ═══ FISHING (thuần câu cá) ═══
 		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
 
 		FishTab:Toggle({
@@ -105,26 +115,8 @@ function SigmaUI.build(hub, Fish, opts)
 		})
 
 		FishTab:Toggle({
-			Title = "Auto Chest",
-			Desc = "Super Rod quest — nhận/giao từ xa",
-			Value = cfg.AutoSuperRod,
-			Flag = "Sigma_AutoChest",
-			Callback = function(v)
-				if not Fish or not Fish.setAutoSuperRod then
-					notify(hub, "Fishing", "Main.lua chưa load", "triangle-alert")
-					return
-				end
-				Fish.setAutoSuperRod(v)
-				getgenv().SigmaFishConfig.AutoSuperRod = v
-				if v then getgenv().SigmaFishConfig.AutoFish = true end
-				notify(hub, "Auto Chest", v and "ON" or "OFF", "sparkles", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
-			end,
-		})
-
-		FishTab:Toggle({
 			Title = "Auto Cook + Sell",
-			Desc = "Tự cook + sell khi đủ cá",
+			Desc = "Cook + sell từ xa (không TP bếp/Cooker)",
 			Value = cfg.AutoCookSell,
 			Flag = "Sigma_AutoCookSell",
 			Callback = function(v)
@@ -159,6 +151,48 @@ function SigmaUI.build(hub, Fish, opts)
 				notify(hub, "Cook+Sell", "Done", "utensils", 2)
 				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
 			end,
+		})
+
+		-- ═══ QUEST (Super Rod chain — tách riêng) ═══
+		QuestTab:Section({ Title = "Fisherman Quest", Icon = "scroll", Box = true, BoxBorder = true })
+
+		QuestTab:Dropdown({
+			Title = "Select Quest",
+			Desc = "Chọn quest cần auto",
+			Values = questOptions,
+			Value = cfg.QuestSelect,
+			Flag = "Sigma_QuestSelect",
+			Callback = function(v)
+				if Fish and Fish.setQuestSelect then Fish.setQuestSelect(v) end
+				getgenv().SigmaFishConfig.QuestSelect = v
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+			end,
+		})
+
+		QuestTab:Toggle({
+			Title = "Auto Quest",
+			Desc = "Accept / deliver / claim từ xa (không TP Fisherman)",
+			Value = cfg.AutoQuest,
+			Flag = "Sigma_AutoQuest",
+			Callback = function(v)
+				if not Fish or not Fish.setAutoQuest then
+					notify(hub, "Quest", "Main.lua chưa load", "triangle-alert")
+					return
+				end
+				Fish.setAutoQuest(v)
+				getgenv().SigmaFishConfig.AutoQuest = v
+				notify(hub, "Auto Quest", v and "ON" or "OFF", "scroll", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+			end,
+		})
+
+		QuestTab:Paragraph({
+			Title = "Quest chain",
+			Desc = table.concat({
+				"Fisherman's Favor → Wood Rod (giao Package)",
+				"Fisherman's Task → Sturdy Rod (giao cá quest)",
+				"Fisherman's Challenge → Super Rod (câu + claim)",
+			}, "\n"),
 		})
 
 		SettingsTab:Button({
