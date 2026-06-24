@@ -2,11 +2,27 @@
 
 local SigmaUI = {}
 
-local function statusText(Fish)
+local function uiLog(opts, msg)
+	if opts and opts.log then
+		opts.log(msg)
+	elseif getgenv().SigmaHubLog then
+		getgenv().SigmaHubLog(msg)
+	else
+		print("[SigmaUI]", msg)
+	end
+end
+
+local function safeStatusText(Fish)
 	if not Fish or not Fish.getStatus then
 		return "Main.lua: not loaded"
 	end
-	local s = Fish.getStatus()
+	local ok, result = pcall(function()
+		return Fish.getStatus()
+	end)
+	if not ok then
+		return "Status error: " .. tostring(result)
+	end
+	local s = result
 	return table.concat({
 		"Auto Fish: " .. (s.autoFish and "ON" or "OFF"),
 		"Auto Quest: " .. (s.autoQuest and "ON" or "OFF"),
@@ -17,6 +33,31 @@ local function statusText(Fish)
 		"Sell at: " .. tostring(s.sellAt or "?"),
 		"Minigame: " .. (s.inMinigame and "active" or "idle"),
 	}, "\n")
+end
+
+-- Ẩn placeholder "This tab is Empty" khi đã có element (WindUI race)
+local function hideEmptyPlaceholder(tab)
+	if not tab or not tab.UIElements or not tab.UIElements.ContainerFrame then
+		return
+	end
+	local scroll = tab.UIElements.ContainerFrame
+	for _, child in ipairs(scroll:GetChildren()) do
+		if child:IsA("Frame") and child:FindFirstChildOfClass("UIListLayout") then
+			for _, label in ipairs(child:GetDescendants()) do
+				if label:IsA("TextLabel") and label.Text == "This tab is Empty" then
+					child.Visible = false
+					return
+				end
+			end
+		end
+	end
+end
+
+local function countElements(tab)
+	if not tab or not tab.Elements then
+		return 0
+	end
+	return #tab.Elements
 end
 
 function SigmaUI.build(hub, Fish, opts)
@@ -40,6 +81,7 @@ function SigmaUI.build(hub, Fish, opts)
 		"Fisherman's Challenge",
 	}
 
+	uiLog(opts, "CreateWindow...")
 	local Window = hub:CreateWindow({
 		Title = "Sigma Hub",
 		Author = "One Piece: Final",
@@ -73,29 +115,31 @@ function SigmaUI.build(hub, Fish, opts)
 		if c and c.SetAsCurrent then c:SetAsCurrent() end
 	end
 
+	uiLog(opts, "Creating tabs...")
 	local MainTab = Window:Tab({ Title = "Main", Icon = "house" })
 	local FishTab = Window:Tab({ Title = "Fishing", Icon = "fish" })
-	local QuestTab = Window:Tab({ Title = "Quest", Icon = "scroll" })
+	local QuestTab = Window:Tab({ Title = "Quest", Icon = "list" })
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
-	task.defer(function()
+	-- Populate đồng bộ (task.defer trên một số executor không chạy → tab trống)
+	uiLog(opts, "Populating tab controls (sync)...")
+	local populateOk, populateErr = pcall(function()
 		local statusPara = MainTab:Paragraph({
 			Title = "Status",
-			Desc = statusText(Fish),
+			Desc = safeStatusText(Fish),
 			Buttons = {
 				{
 					Title = "Refresh",
 					Icon = "refresh-cw",
 					Callback = function()
 						if statusPara and statusPara.SetDesc then
-							statusPara:SetDesc(statusText(Fish))
+							statusPara:SetDesc(safeStatusText(Fish))
 						end
 					end,
 				},
 			},
 		})
 
-		-- ═══ FISHING (thuần câu cá) ═══
 		FishTab:Section({ Title = "Fishing", Icon = "fish", Box = true, BoxBorder = true })
 
 		FishTab:Toggle({
@@ -110,7 +154,7 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				Fish.setAutoFish(v)
 				notify(hub, "Auto Fish", v and "ON" or "OFF", "fish", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -123,7 +167,7 @@ function SigmaUI.build(hub, Fish, opts)
 				if Fish and Fish.setAutoCookSell then Fish.setAutoCookSell(v) end
 				getgenv().SigmaFishConfig.AutoCookSell = v
 				notify(hub, "Cook+Sell", v and "ON" or "OFF", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -149,12 +193,11 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				Fish.cookSell()
 				notify(hub, "Cook+Sell", "Done", "utensils", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
-		-- ═══ QUEST (Super Rod chain — tách riêng) ═══
-		QuestTab:Section({ Title = "Fisherman Quest", Icon = "scroll", Box = true, BoxBorder = true })
+		QuestTab:Section({ Title = "Fisherman Quest", Icon = "list", Box = true, BoxBorder = true })
 
 		QuestTab:Dropdown({
 			Title = "Select Quest",
@@ -165,7 +208,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Callback = function(v)
 				if Fish and Fish.setQuestSelect then Fish.setQuestSelect(v) end
 				getgenv().SigmaFishConfig.QuestSelect = v
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -181,8 +224,8 @@ function SigmaUI.build(hub, Fish, opts)
 				end
 				Fish.setAutoQuest(v)
 				getgenv().SigmaFishConfig.AutoQuest = v
-				notify(hub, "Auto Quest", v and "ON" or "OFF", "scroll", 2)
-				if statusPara and statusPara.SetDesc then statusPara:SetDesc(statusText(Fish)) end
+				notify(hub, "Auto Quest", v and "ON" or "OFF", "list", 2)
+				if statusPara and statusPara.SetDesc then statusPara:SetDesc(safeStatusText(Fish)) end
 			end,
 		})
 
@@ -205,9 +248,45 @@ function SigmaUI.build(hub, Fish, opts)
 				end)
 			end,
 		})
+	end)
 
-		if Window.SelectTab and FishTab.Index then
-			Window:SelectTab(FishTab.Index)
+	if not populateOk then
+		uiLog(opts, "POPULATE FAILED: " .. tostring(populateErr))
+		warn("[SigmaUI] populate error:", populateErr)
+		warn(debug.traceback(tostring(populateErr), 2))
+		error("SigmaUI populate failed: " .. tostring(populateErr))
+	end
+
+	local counts = {
+		Main = countElements(MainTab),
+		Fishing = countElements(FishTab),
+		Quest = countElements(QuestTab),
+		Settings = countElements(SettingsTab),
+	}
+	uiLog(opts, string.format(
+		"Elements — Main:%d Fishing:%d Quest:%d Settings:%d",
+		counts.Main, counts.Fishing, counts.Quest, counts.Settings
+	))
+
+	getgenv().__SIGMA_UI_COUNTS = counts
+
+	-- Chọn tab Main + ẩn empty placeholder sau khi WindUI spawn xong
+	task.spawn(function()
+		task.wait(0.15)
+		hideEmptyPlaceholder(MainTab)
+		hideEmptyPlaceholder(FishTab)
+		hideEmptyPlaceholder(QuestTab)
+		hideEmptyPlaceholder(SettingsTab)
+
+		if Window.SelectTab and MainTab.Index then
+			Window:SelectTab(MainTab.Index)
+		end
+
+		local total = counts.Main + counts.Fishing + counts.Quest + counts.Settings
+		if total == 0 then
+			warn("[SigmaUI] Tab trống — không có element nào được tạo!")
+		else
+			uiLog(opts, "UI visible — chọn tab Main")
 		end
 	end)
 
