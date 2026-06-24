@@ -414,7 +414,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 		LucyTab:Paragraph({
 			Title = "Note",
-			Desc = "Auto roll slot 1 (Reroll1). Remote roll — no need to TP to Lucy.",
+			Desc = "Auto roll slot 1 (Reroll1).",
 		})
 
 		local function affinityInput(stat, placeholder)
