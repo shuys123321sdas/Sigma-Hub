@@ -314,6 +314,8 @@ COMBAT = {
 	ORDER = { "Sword", "Melee" },
 	M1_LOOP_WAIT = 0.15,
 	M1_CLICK_GAP = 0.03,
+	M1_MOUSE_X = 500,
+	M1_MOUSE_Y = 300,
 	CAT_ALIASES = {
 		Sword = { "Sword", "Swords" },
 		Melee = { "Melee" },
@@ -1784,26 +1786,24 @@ function tpNearMob(mob, force)
 	return true
 end
 
-function vuM1Click()
-	if not VirtualUser then return false end
-	local cam = workspace.CurrentCamera
-	if not cam then return false end
+function vimM1Click()
+	if not VirtualInputManager then return false end
 	pcall(function()
-		VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
+		VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, true, game, 0)
 	end)
 	task.wait(COMBAT.M1_CLICK_GAP)
 	pcall(function()
-		VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
+		VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, false, game, 0)
 	end)
 	return true
 end
 
 function m1AttackOnce()
-	return vuM1Click()
+	return vimM1Click()
 end
 
 function mobAttackOnce()
-	return vuM1Click()
+	return vimM1Click()
 end
 
 function startM1Loop(aliveFn, mob)
@@ -1814,7 +1814,15 @@ function startM1Loop(aliveFn, mob)
 		while isActive() and STATE.m1RunId == run and task.wait(COMBAT.M1_LOOP_WAIT) do
 			if aliveFn and not aliveFn() then continue end
 			ensureCombatReady()
-			vuM1Click()
+			if VirtualInputManager then
+				pcall(function()
+					VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, true, game, 0)
+				end)
+				task.wait(COMBAT.M1_CLICK_GAP)
+				pcall(function()
+					VirtualInputManager:SendMouseButtonEvent(COMBAT.M1_MOUSE_X, COMBAT.M1_MOUSE_Y, 0, false, game, 0)
+				end)
+			end
 		end
 	end)
 	return run
@@ -2697,7 +2705,7 @@ function useToolClicks(tool, hum, clicks, delay)
 	local n = clicks or 1
 	for i = 1, n do
 		if not isActive() or not tool.Parent then break end
-		if not pcall(function() tool:Activate() end) then vuM1Click() end
+		if not pcall(function() tool:Activate() end) then vimM1Click() end
 		if delay and delay > 0 then
 			task.wait(delay)
 		elseif i < n then
