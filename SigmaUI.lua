@@ -168,6 +168,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 	local configFile
 	local syncConfigFromUi
+	local applyConfigToUi
 
 	if Window.ConfigManager then
 		configFile = Window.ConfigManager:Config("sigma-fish")
@@ -224,6 +225,40 @@ function SigmaUI.build(hub, Fish, opts)
 		return false
 	end
 
+	local function applyBackendFromConfig(c)
+		if not c then return end
+		cfg = c
+		getgenv().SigmaFishConfig = c
+		if not Fish then return end
+		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
+		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
+		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
+		if Fish.setAutoCookSell then Fish.setAutoCookSell(c.AutoCookSell ~= false) end
+		if Fish.setAutoSpawn then Fish.setAutoSpawn(c.AutoSpawn ~= false) end
+		if Fish.setAntiAfk then Fish.setAntiAfk(c.AntiAfk ~= false) end
+		if Fish.setSellAt then Fish.setSellAt(c.SellAt) end
+		if Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(c.AutoKenbunshoku == true) end
+		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
+		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
+		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
+		if Fish.setAutoAffinity then Fish.setAutoAffinity(c.AutoAffinity == true) end
+		if Fish.setHideName then Fish.setHideName(c.HideName ~= false) end
+		if Fish.setAutoClaimSam then Fish.setAutoClaimSam(c.AutoClaimSam == true) end
+		if Fish.setAutoDropCompass then Fish.setAutoDropCompass(c.AutoDropCompass == true) end
+		if Fish.setAutoFindSam then Fish.setAutoFindSam(c.AutoFindSam == true) end
+		if Fish.setAutoSkill then Fish.setAutoSkill(c.AutoSkill == true) end
+		if Fish.setSkillKeys then Fish.setSkillKeys(c.SkillKeys) end
+		if Fish.setSkillHoldSec then Fish.setSkillHoldSec(c.SkillHoldSec) end
+		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
+		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
+		if Fish.setCacheUsePick then Fish.setCacheUsePick(c.CacheUsePick) end
+		if Fish.setCacheDropPick then Fish.setCacheDropPick(c.CacheDropPick) end
+		if Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(c.AutoCacheDrop == true) end
+		if Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(c.AutoUseConsumables ~= false) end
+		if Fish.applyConfig then Fish.applyConfig() end
+		applyUiHideName()
+	end
+
 	local function loadConfig(silent)
 		if not configFile or not configFile.Load then
 			if not silent then
@@ -240,10 +275,10 @@ function SigmaUI.build(hub, Fish, opts)
 			end
 			return false
 		end
-		task.wait(0.35)
+		task.wait(0.55)
+		local merged = copyConfigTable(getgenv().SigmaFishConfig or cfg)
 		local snap = configFile.Get and configFile:Get("SigmaFishConfig")
 		if type(snap) == "table" then
-			local merged = copyConfigTable(getgenv().SigmaFishConfig or cfg)
 			for k, v in pairs(snap) do
 				if type(v) == "table" then
 					local nested = {}
@@ -253,23 +288,26 @@ function SigmaUI.build(hub, Fish, opts)
 					merged[k] = v
 				end
 			end
-			cfg = merged
-			getgenv().SigmaFishConfig = merged
 		end
 		local theme = configFile.Get and configFile:Get("Theme")
 		if theme and hub.SetTheme then
 			hub:SetTheme(theme)
-			cfg.Theme = theme
+			merged.Theme = theme
 		end
 		local autoLoad = configFile.Get and configFile:Get("AutoReloadConfig")
 		if autoLoad ~= nil then
-			cfg.AutoReloadConfig = autoLoad == true
+			merged.AutoReloadConfig = autoLoad == true
 		end
-		if syncConfigFromUi then
-			syncConfigFromUi(true)
-		elseif Fish and Fish.applyConfig then
-			pcall(function() Fish.applyConfig() end)
+		cfg = merged
+		getgenv().SigmaFishConfig = merged
+		if type(snap) == "table" then
+			if applyConfigToUi then applyConfigToUi(merged) end
+		elseif syncConfigFromUi then
+			syncConfigFromUi(false)
+			merged = getgenv().SigmaFishConfig or merged
+			cfg = merged
 		end
+		applyBackendFromConfig(merged)
 		if not silent then
 			notify(hub, "Config", "Config loaded", "folder-open", 3)
 		end
@@ -955,6 +993,59 @@ function SigmaUI.build(hub, Fish, opts)
 
 	getgenv().__SIGMA_UI_COUNTS = counts
 
+	applyConfigToUi = function(c)
+		if type(c) ~= "table" then return end
+		local function setToggle(toggle, on)
+			if toggle and toggle.Set then
+				pcall(function() toggle:Set(on == true) end)
+			end
+		end
+		setToggle(autoFishToggle, c.AutoFish)
+		setToggle(autoQuestToggle, c.AutoQuest)
+		setToggle(autoExpertiseToggle, c.AutoExpertise)
+		setToggle(autoCookToggle, c.AutoCookSell ~= false)
+		setToggle(autoSpawnToggle, c.AutoSpawn ~= false)
+		setToggle(antiAfkToggle, c.AntiAfk ~= false)
+		setToggle(autoReloadToggle, c.AutoReloadConfig ~= false)
+		setToggle(autoKenToggle, c.AutoKenbunshoku)
+		setToggle(autoBusoToggle, c.AutoBusoshoku)
+		setToggle(fastHakiToggle, c.FastHaki)
+		setToggle(autoRayleighToggle, c.AutoRayleigh)
+		setToggle(autoAffinityToggle, c.AutoAffinity)
+		setToggle(hideNameToggle, c.HideName ~= false)
+		setToggle(autoClaimSamToggle, c.AutoClaimSam)
+		setToggle(autoDropCompassToggle, c.AutoDropCompass)
+		setToggle(autoFindSamToggle, c.AutoFindSam)
+		setToggle(autoSkillToggle, c.AutoSkill)
+		setToggle(autoWhitelistToggle, c.AutoWhitelistRejoin)
+		setToggle(autoCacheDropToggle, c.AutoCacheDrop)
+		setToggle(autoUseConsumablesToggle, c.AutoUseConsumables ~= false)
+		if themeDropdown and themeDropdown.Set and c.Theme then
+			pcall(function() themeDropdown:Set(c.Theme) end)
+		end
+		if questDropdown and questDropdown.Set and c.QuestPick ~= nil then
+			pcall(function() questDropdown:Set(c.QuestPick) end)
+		end
+		if skillKeysDropdown and skillKeysDropdown.Set and c.SkillKeys ~= nil then
+			pcall(function() skillKeysDropdown:Set(c.SkillKeys) end)
+		end
+		if skillHoldInput and skillHoldInput.Set and c.SkillHoldSec ~= nil then
+			pcall(function() skillHoldInput:Set(tostring(c.SkillHoldSec)) end)
+		end
+		if rejoinWhitelistInput and rejoinWhitelistInput.Set and c.RejoinWhitelist ~= nil then
+			pcall(function() rejoinWhitelistInput:Set(tostring(c.RejoinWhitelist)) end)
+		end
+		if cacheUseDropdown and cacheUseDropdown.Set and c.CacheUsePick ~= nil then
+			pcall(function() cacheUseDropdown:Set(c.CacheUsePick) end)
+		end
+		if cacheDropDropdown and cacheDropDropdown.Set and c.CacheDropPick ~= nil then
+			pcall(function() cacheDropDropdown:Set(c.CacheDropPick) end)
+		end
+		if sellAtSlider and sellAtSlider.Set and c.SellAt ~= nil then
+			pcall(function() sellAtSlider:Set(tonumber(c.SellAt) or c.SellAt) end)
+		end
+	end
+
 	syncConfigFromUi = function(applyBackend)
 		local c = getgenv().SigmaFishConfig or {}
 		if autoFishToggle and autoFishToggle.Value ~= nil then c.AutoFish = autoFishToggle.Value == true end
@@ -999,34 +1090,7 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 		cfg = c
 		getgenv().SigmaFishConfig = c
-		if not applyBackend or not Fish then return c end
-		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
-		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
-		if Fish.setAutoFish then Fish.setAutoFish(c.AutoFish == true) end
-		if Fish.setAutoCookSell then Fish.setAutoCookSell(c.AutoCookSell ~= false) end
-		if Fish.setAutoSpawn then Fish.setAutoSpawn(c.AutoSpawn ~= false) end
-		if Fish.setAntiAfk then Fish.setAntiAfk(c.AntiAfk ~= false) end
-		if Fish.setSellAt then Fish.setSellAt(c.SellAt) end
-		if Fish.setAutoKenbunshoku then Fish.setAutoKenbunshoku(c.AutoKenbunshoku == true) end
-		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
-		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
-		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
-		if Fish.setAutoAffinity then Fish.setAutoAffinity(c.AutoAffinity == true) end
-		if Fish.setHideName then Fish.setHideName(c.HideName ~= false) end
-		if Fish.setAutoClaimSam then Fish.setAutoClaimSam(c.AutoClaimSam == true) end
-		if Fish.setAutoDropCompass then Fish.setAutoDropCompass(c.AutoDropCompass == true) end
-		if Fish.setAutoFindSam then Fish.setAutoFindSam(c.AutoFindSam == true) end
-		if Fish.setAutoSkill then Fish.setAutoSkill(c.AutoSkill == true) end
-		if Fish.setSkillKeys then Fish.setSkillKeys(c.SkillKeys) end
-		if Fish.setSkillHoldSec then Fish.setSkillHoldSec(c.SkillHoldSec) end
-		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
-		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
-		if Fish.setCacheUsePick then Fish.setCacheUsePick(c.CacheUsePick) end
-		if Fish.setCacheDropPick then Fish.setCacheDropPick(c.CacheDropPick) end
-		if Fish.setAutoCacheDrop then Fish.setAutoCacheDrop(c.AutoCacheDrop == true) end
-		if Fish.setAutoUseConsumables then Fish.setAutoUseConsumables(c.AutoUseConsumables ~= false) end
-		if Fish.applyConfig then Fish.applyConfig() end
-		applyUiHideName()
+		if applyBackend then applyBackendFromConfig(c) end
 		return c
 	end
 
