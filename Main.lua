@@ -3741,10 +3741,10 @@ end
 
 function hakiFastTanking()
 	if not HAKI.FAST then return false end
-	if not (STATE.hakiFastRunning or STATE.hakiWasFull) then return false end
-	if BRING.holdActive and STATE.hakiHoldCF then return true end
 	local ratio = select(1, readHakiBar())
-	return ratio ~= nil and ratio >= HAKI.FULL_RATIO
+	if ratio == nil or ratio < HAKI.FULL_RATIO then return false end
+	if not BRING.holdActive or not STATE.hakiHoldCF then return false end
+	return hakiNearHoldMob()
 end
 
 function stepFastHakiEnsureCast()
@@ -3947,9 +3947,9 @@ function stepFastHaki()
 	if ratio >= HAKI.FULL_RATIO then
 		STATE.hakiFastRunning = true
 		STATE.hakiWasFull = true
-		stepFastHakiEnsureCast()
 		local needAnchor = not BRING.holdActive or not STATE.hakiHoldCF
 		local _, brought = hakiFarmBringTarget(target, needAnchor)
+		stepFastHakiEnsureCast()
 		hakiLog("fast:full", string.format(
 			"bar full %d%% (%d/%d) | bring=%d anchor=%s haki=%s mob=%s",
 			pct, amount or 0, cap or 0, brought, tostring(BRING.holdActive),
@@ -3957,7 +3957,6 @@ function stepFastHaki()
 		), 3)
 		return true
 	end
-	stepFastHakiEnsureCast()
 	local needAnchor = not BRING.holdActive or not STATE.hakiHoldCF
 	local _, brought = hakiFarmBringTarget(target, needAnchor)
 	hakiLog("fast:fill", string.format(
