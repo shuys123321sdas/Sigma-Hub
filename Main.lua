@@ -44,6 +44,11 @@ HUB = {
 	ANTI_AFK_JUMP = 180,
 	LOOP_DELAY = 0.35,
 	SPAWN_COOLDOWN = 10,
+	HIDE_NAME = true,
+	HIDE_NAME_LABEL = "Sigma Hub",
+	REAL_NAME = nil,
+	REAL_DISPLAY = nil,
+	REAL_HAKI_NAME = nil,
 }
 
 GRAPPLE = {
@@ -87,6 +92,9 @@ STATE = {
 	hakiFullStickySince = nil,
 	hakiLastBarAmount = nil,
 	hakiLastFastCast = 0,
+	hakiMaxNotified = false,
+	hideNameActive = false,
+	hideNameGuiAt = 0,
 }
 
 QUEST = {
@@ -195,6 +203,12 @@ RAYLEIGH = {
 	CHEST_WAIT = 0.3,
 	lastDbgAt = 0,
 	_meditateTrack = nil,
+}
+
+SAM = {
+	ON = true,
+	PITY_STOP = 99,
+	QUEST = "Help Sam",
 }
 
 AFFINITY = {
@@ -439,6 +453,209 @@ function clickNPC(model)
 	local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
 	if cd and fireclickdetector then pcall(fireclickdetector, cd) end
 	task.wait(0.05)
+end
+
+function hubRealName()
+	if not HUB.REAL_NAME then
+		HUB.REAL_NAME = player and player.Name or ""
+		HUB.REAL_DISPLAY = player and player.DisplayName or HUB.REAL_NAME
+	end
+	return HUB.REAL_NAME
+end
+
+function hubDisplayName()
+	return HUB.HIDE_NAME_LABEL or "Sigma Hub"
+end
+
+function notifyHub(title, content, icon, duration)
+	local fn = getgenv().SigmaHubNotify
+	if type(fn) == "function" then
+		pcall(fn, title, content, icon, duration)
+	end
+end
+
+function updateHakiMaxState()
+	local maxed = hakiFarmStoppedByLevel()
+	local lv, stop = statLevel("Haki"), hakiStopLevel()
+	local cb = getgenv().SigmaHakiMaxCallback
+	if type(cb) == "function" then
+		pcall(cb, maxed, lv, stop)
+	end
+	if maxed and not STATE.hakiMaxNotified then
+		STATE.hakiMaxNotified = true
+		if stop and stop > 0 then
+			notifyHub("Haki MAX", string.format("Haki Lv %d >= stop %d", lv, stop), "zap", 5)
+		else
+			notifyHub("Haki MAX", string.format("Haki Lv %d — đã max", lv), "zap", 5)
+		end
+	elseif not maxed then
+		STATE.hakiMaxNotified = false
+	end
+end
+
+function patchDataName(enabled)
+	local d = getData()
+	if not d then return end
+	local alias, real = hubDisplayName(), hubRealName()
+	if d.Name ~= nil then
+		if enabled then
+			if not HUB.REAL_DATA_NAME then HUB.REAL_DATA_NAME = d.Name end
+			d.Name = alias
+		elseif HUB.REAL_DATA_NAME then
+			d.Name = HUB.REAL_DATA_NAME
+		else
+			d.Name = real
+		end
+	end
+	local haki = d.Stats and d.Stats.Haki
+	if type(haki) == "table" and haki.Name ~= nil then
+		if enabled then
+			if not HUB.REAL_HAKI_NAME then HUB.REAL_HAKI_NAME = haki.Name end
+			haki.Name = alias
+		elseif HUB.REAL_HAKI_NAME then
+			haki.Name = HUB.REAL_HAKI_NAME
+		else
+			haki.Name = real
+		end
+	end
+end
+
+function patchCharacterName(enabled)
+	local char = player and player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	if enabled then
+		hum.DisplayName = hubDisplayName()
+	else
+		hum.DisplayName = HUB.REAL_DISPLAY or hubRealName()
+	end
+end
+
+function patchGuiNames(enabled)
+	local pg = player and player:FindFirstChild("PlayerGui")
+	if not pg then return end
+	local alias, real = hubDisplayName(), hubRealName()
+	local menu = pg:FindFirstChild("Menu")
+	local statsFrame = menu and menu:FindFirstChild("Frame")
+		and menu.Frame:FindFirstChild("MenuList")
+		and menu.Frame.MenuList:FindFirstChild("Stats")
+		and menu.Frame.MenuList.Stats:FindFirstChild("Frame")
+	if statsFrame then
+		local tag = statsFrame:FindFirstChild("Nametag")
+		if tag and tag:IsA("TextLabel") then
+			tag.Text = enabled and alias or real
+		end
+	end
+	local lb = pg:FindFirstChild("Leaderboard")
+	local list = lb and lb:FindFirstChild("PlayerListContainer")
+	local row = list and list:FindFirstChild(real)
+	if row then
+		local pn = row:FindFirstChild("BGFrame") and row.BGFrame:FindFirstChild("PlayerName")
+		if pn and pn:IsA("TextLabel") then
+			pn.Text = enabled and alias or real
+		end
+	end
+	for _, inst in ipairs(pg:GetDescendants()) do
+		if (inst:IsA("TextLabel") or inst:IsA("TextButton")) and inst.Text == real then
+			inst.Text = enabled and alias or real
+		elseif (inst:IsA("TextLabel") or inst:IsA("TextButton")) and not enabled and inst.Text == alias then
+			inst.Text = real
+		end
+	end
+end
+
+function restoreHideName()
+	patchDataName(false)
+	patchCharacterName(false)
+	patchGuiNames(false)
+end
+
+function stepHideName()
+	if HUB.HIDE_NAME == false then
+		if STATE.hideNameActive then
+			restoreHideName()
+			STATE.hideNameActive = false
+		end
+		return
+	end
+	STATE.hideNameActive = true
+	patchDataName(true)
+	patchCharacterName(true)
+	local now = os.clock()
+	if not STATE.hideNameGuiAt or now - STATE.hideNameGuiAt > 1.5 then
+		STATE.hideNameGuiAt = now
+		patchGuiNames(true)
+	end
+end
+
+function samIsManagedActive(name)
+	if not name or name == "" then return false end
+	if RAYLEIGH.ON and (name == "Strange Powers #1" or name == "Strange Powers #2"
+		or name == "Strange Powers #3" or name == RAYLEIGH.SP4) then
+		return true
+	end
+	if SAM.ON and name == SAM.QUEST then return true end
+	return false
+end
+
+function trySamClaim(name, info)
+	local d = getData()
+	local stats = d and d.Stats
+	if not stats then return false end
+	local cd = questCooldownRemaining(info.quest)
+	local q = d.Quests
+	local active = q and q.Active
+	if active and active ~= "" and active ~= info.quest and not samIsManagedActive(active) then
+		hakiLog("samforce", string.format("[Sam] active '%s' -> force accept/claim", active), 8)
+	end
+	if not stats.CompletedStarterCompass and cd <= 0 then
+		local m = findNPC(name)
+		if not m then return false end
+		clickNPC(m)
+		exec("QuestEvents", { "Accept", info.quest })
+		print(string.format("[Sigma Sam] ACCEPTED '%s' (kill thugs first)", info.quest))
+		return true
+	end
+	if not SAM.ON or (tonumber(stats.Compass) or 0) < 1 then return false end
+	local pity = tonumber(stats.GoldenCompassPity) or 0
+	local remaining = SAM.PITY_STOP - pity
+	if remaining <= 0 then
+		hakiLog("sampity", string.format("[Sam] GoldenCompassPity %d/%d -> STOP claim", pity, SAM.PITY_STOP), 30)
+		return false
+	end
+	local m = findNPC(name)
+	if not m then return false end
+	clickNPC(m)
+	local canClaim = math.floor(tonumber(stats.Compass) or 0)
+	local amount = math.min(canClaim, 10, remaining)
+	if amount < 1 then return false end
+	exec("Sam", { "ClaimAmount", m, amount })
+	print(string.format("[Sigma Sam] claim %d compass (Compass=%s pity=%d/%d)",
+		amount, tostring(stats.Compass), pity, SAM.PITY_STOP))
+	return true
+end
+
+function stepSam()
+	if not SAM.ON then return false end
+	local d = getData()
+	local q = d and d.Quests
+	if not q then return false end
+	local info = QUEST.DB["Sam"]
+	if not info then return false end
+	if q.Active == SAM.QUEST then
+		if q.Completed == true then
+			local m = findNPC("Sam")
+			if m then
+				clickNPC(m)
+				exec("QuestEvents", { "Claim" })
+				print("[Sigma Sam] CLAIMED 'Help Sam'")
+			end
+		else
+			stepFarmQuest("Sam", info, "sam")
+		end
+		return true
+	end
+	return trySamClaim("Sam", info)
 end
 
 function tpFace(model, dist, up)
@@ -989,6 +1206,7 @@ end
 function questModeOk(mode)
 	if mode == "expertise" then return questExpertiseEnabled() end
 	if mode == "pick" then return questPickEnabled() end
+	if mode == "sam" then return SAM.ON end
 	return questModeEnabled()
 end
 
@@ -2159,6 +2377,10 @@ function questWorkActive()
 			return true
 		end
 	end
+	if SAM.ON and q.Active == SAM.QUEST then
+		if q.Completed then return true end
+		return true
+	end
 	return false
 end
 
@@ -2397,7 +2619,7 @@ function fishStep()
 end
 
 function hubRunning()
-	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON
+	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON or SAM.ON
 end
 
 function hakiModeEnabled()
@@ -2536,6 +2758,8 @@ function syncCfg()
 	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
 	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
 	HUB.ANTI_AFK = cfg.AntiAfk ~= false
+	HUB.HIDE_NAME = cfg.HideName ~= false
+	SAM.ON = cfg.AutoClaimSam ~= false
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
 	HAKI.FAST = cfg.FastHaki == true
@@ -3597,6 +3821,7 @@ function stepFastHaki()
 	end
 	if hakiFarmStoppedByLevel() then
 		local lv, stop = statLevel("Haki"), hakiStopLevel()
+		updateHakiMaxState()
 		hakiLog("fast:max", string.format("Haki Lv %d >= stop %d (set HakiStopLevel=0 to disable)", lv, stop), 15)
 		return false
 	end
@@ -4208,16 +4433,18 @@ function refreshAffinityLoop()
 end
 
 function stepHakiFeatures()
-	if not hakiModeEnabled() then
-		stepHakiForceOff()
-		return
-	end
-	hakiLog("diag", hakiDiagSnapshot(), 8)
+	updateHakiMaxState()
 	local ok, err = pcall(function()
+		if RAYLEIGH.ON and stepRayleigh() then return end
+		if SAM.ON and stepSam() then return end
+		if not hakiModeEnabled() then
+			stepHakiForceOff()
+			return
+		end
+		hakiLog("diag", hakiDiagSnapshot(), 8)
 		stepHakiForceOff()
 		stepAutoKenbunshoku()
 		stepAutoBusoshoku()
-		if RAYLEIGH.ON and stepRayleigh() then return end
 		stepFastHaki()
 	end)
 	if not ok then
@@ -4258,6 +4485,7 @@ end
 
 function hubTick()
 	syncCfg()
+	stepHideName()
 	if not isActive() then return end
 	serviceTick()
 	if spawnOpen() then return end
@@ -4283,6 +4511,11 @@ function startHubLoop()
 			STATE.hakiHoldCF = nil
 			hakiClearDrainWatch()
 			hakiClearFullSticky()
+			if HUB.HIDE_NAME then
+				task.wait(0.3)
+				patchCharacterName(true)
+				patchGuiNames(true)
+			end
 		end)
 	end
 	task.spawn(function()
@@ -4387,6 +4620,26 @@ function SigmaFish.setAntiAfk(on)
 	refreshHubServices()
 end
 
+function SigmaFish.setHideName(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.HideName = on ~= false
+	getgenv().SigmaFishConfig = cfg
+	HUB.HIDE_NAME = cfg.HideName
+	if not HUB.HIDE_NAME then
+		restoreHideName()
+		STATE.hideNameActive = false
+	end
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoClaimSam(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoClaimSam = on ~= false
+	getgenv().SigmaFishConfig = cfg
+	SAM.ON = cfg.AutoClaimSam
+	ensureLoopRunning()
+end
+
 function SigmaFish.setAutoKenbunshoku(on)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoKenbunshoku = on == true
@@ -4485,6 +4738,8 @@ function SigmaFish.applyConfig()
 	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
 	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
 	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
+	if cfg.HideName == nil then cfg.HideName = true end
+	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = true end
 	getgenv().SigmaFishConfig = cfg
 	QUEST.PICK = cfg.QuestPick
 	local wantAuto = cfg.AutoQuest == true
@@ -4521,6 +4776,14 @@ function SigmaFish.applyConfig()
 	end
 	if not wantAff then stopAffinityLoop() end
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+	local wantHide = cfg.HideName ~= false
+	local wantSam = cfg.AutoClaimSam ~= false
+	if wantHide ~= (HUB.HIDE_NAME == true) and SigmaFish.setHideName then
+		SigmaFish.setHideName(wantHide)
+	elseif wantHide then HUB.HIDE_NAME = true end
+	if wantSam ~= SAM.ON and SigmaFish.setAutoClaimSam then
+		SigmaFish.setAutoClaimSam(wantSam)
+	elseif wantSam then SAM.ON = true end
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
@@ -4539,6 +4802,15 @@ end
 
 function SigmaFish.cookSell()
 	return cookAndSell(true)
+end
+
+function SigmaFish.getHakiStatus()
+	local lv, stop = statLevel("Haki"), hakiStopLevel()
+	return {
+		level = lv,
+		stop = stop,
+		maxed = hakiFarmStoppedByLevel(),
+	}
 end
 
 function SigmaFish.getStatus()
@@ -4618,6 +4890,8 @@ do
 	if cfg.AutoBusoshoku == nil then cfg.AutoBusoshoku = false end
 	if cfg.FastHaki == nil then cfg.FastHaki = false end
 	if cfg.AutoRayleigh == nil then cfg.AutoRayleigh = false end
+	if cfg.HideName == nil then cfg.HideName = true end
+	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = true end
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	syncCfg()
