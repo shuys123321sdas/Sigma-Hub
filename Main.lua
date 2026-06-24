@@ -61,7 +61,7 @@ FISH = {
 	ON = false, AUTO_SELL = true,
 	SELL_AT = 40, LOOP_DELAY = 0.25,
 	CAST_TIMEOUT = 4, BITE_TIMEOUT = 30, REEL_TIMEOUT = 4,
-	MINI_CLICK = 0.38, MINI_SHUFFLE = 0.3, MINI_READY = 0.55, MINI_POLL = 0.12,
+	MINI_CLICK = 0.2, MINI_SHUFFLE = 0.2, MINI_READY = 0.55, MINI_POLL = 0.12,
 	MINI_DEBOUNCE = 0.4,
 	COOK_PATH = "MapFolder.Island8.Kitchen.Cooking.CookingStation",
 	FISHERMAN = "Fisherman", COOKER = "Cooker", ROD_CAT = "Utility",
@@ -96,6 +96,7 @@ CACHE = {
 	DROP_WAIT = 0.06,
 	TICK = 0.4,
 	_lastTick = 0,
+	_dropBusy = false,
 	CONSUME_MATCH = {
 		"smoothie", "cider", "juice", "lemonade", "milk",
 		"apple", "banana", "cantaloupe", "coconut", "melon", "pumpkin", "pear", "prickly",
@@ -1250,6 +1251,7 @@ function equipRod(name)
 end
 
 function ensureRodReady()
+	if shouldDeferRodEquip() then return nil end
 	local rod = findRod()
 	local want = bestRodName()
 	if want and (not rod or select(2, findRod()) ~= want) then
@@ -1874,7 +1876,23 @@ function rodHeld(rod)
 	return rod and player.Character and rod.Parent == player.Character
 end
 
-function equipBestRod()
+function cacheDropPending(types)
+	types = types or cacheDropPick()
+	for _, typeKey in ipairs(types) do
+		if #collectToolsByCacheType(typeKey) > 0 then return true end
+	end
+	return false
+end
+
+function shouldDeferRodEquip()
+	if CACHE._dropBusy then return true end
+	if CACHE.AUTO_DROP and #cacheDropPick() > 0 and cacheDropPending(cacheDropPick()) then
+		return true
+	end
+	return false
+end
+
+function equipBestRodNow()
 	ensureBestRodLoadout()
 	local bestName = bestRodName()
 	local rod = (bestName and findTool(bestName)) or select(1, findRod())
@@ -1902,6 +1920,21 @@ function equipBestRod()
 		task.wait(0.08)
 	end
 	return rodHeld(rod) and rod or nil
+end
+
+function equipBestRod()
+	if shouldDeferRodEquip() then
+		local bestName = bestRodName()
+		return (bestName and findTool(bestName)) or select(1, findRod())
+	end
+	return equipBestRodNow()
+end
+
+function finishCacheDropSession(types)
+	if cacheDropPending(types) then return end
+	if FISH.ON and findRod() then
+		task.defer(equipBestRodNow)
+	end
 end
 
 function clickRod(rod)
@@ -2766,14 +2799,24 @@ function cacheDropTypes(types, maxPerTick)
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if not hum then return false end
 	maxPerTick = maxPerTick or 5
+	CACHE._dropBusy = true
 	local dropped = 0
 	for _, typeKey in ipairs(types) do
 		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
-			if not isActive() then return dropped > 0 end
-			if dropped >= maxPerTick then return true end
+			if not isActive() then
+				CACHE._dropBusy = false
+				finishCacheDropSession(types)
+				return dropped > 0
+			end
+			if dropped >= maxPerTick then
+				CACHE._dropBusy = false
+				return true
+			end
 			if dropToolInPlace(tool, hum) then dropped += 1 end
 		end
 	end
+	CACHE._dropBusy = false
+	finishCacheDropSession(types)
 	return dropped > 0
 end
 
