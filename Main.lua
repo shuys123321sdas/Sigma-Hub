@@ -814,7 +814,7 @@ end
 function findPackageReceiver()
 	local skip = {
 		deliver = true, package = true, quest = true, fisherman = true,
-		favor = true, friend = true, give = true, the = true, and = true,
+		favor = true, friend = true, give = true, the = true, ["and"] = true,
 	}
 	local tokens = activeObjectiveTokens()
 	local root = workspace:FindFirstChild("Ignore")
