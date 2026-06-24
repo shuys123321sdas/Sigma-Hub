@@ -59,7 +59,7 @@ end
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
-	lastSolveAt = 0, miniTotal = nil, cooking = false,
+	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
 }
 
 QUEST = {
@@ -88,9 +88,40 @@ QUEST = {
 		["Gemologist"] = { quest = "Gem Hunter", kind = "reach", target = "Chests.Gemologist" },
 	},
 	COLLECT_BLOCK = { "grapple", "package", "melee", "essence", "compass" },
-	COLLECT_WAIT = 0.12,
+	COLLECT_WAIT = 0.03,
+	COLLECT_BATCH = 8,
+	COLLECT_TP_UP = 2,
 	CARRY_SWEEP_WAIT = 0.35,
+	ATTACK_RANGE = 5,
+	ATTACK_CD = 0.15,
+	ATTACK_BURST = 3.5,
+	TARGET_SCAN = 800,
 }
+
+COMBAT = {
+	ORDER = { "Sword", "Melee" },
+	CAT_ALIASES = {
+		Sword = { "Sword", "Swords" },
+		Melee = { "Melee" },
+		Sniper = { "Sniper", "Snipers" },
+		Utility = { "Utility" },
+	},
+	PRIORITY = {
+		Sword = { "Dagger", "Wakizashi", "Tachi", "Katana", "Crocodile's Hook", "Crocodiles Hook", "Kogatana", "Yoru", "Bisento" },
+		Melee = { "Melee", "Black Leg", "Seastone Cestus", "Table Kick", "Krizma" },
+		Sniper = { "Slingshot", "Crossbow", "Flintlock", "Stars" },
+	},
+	CATEGORY = {},
+	RANK = {},
+}
+do
+	for cat, list in pairs(COMBAT.PRIORITY) do
+		for i, name in ipairs(list) do
+			COMBAT.CATEGORY[name] = cat
+			COMBAT.RANK[string.lower(name)] = { rank = i, category = cat }
+		end
+	end
+end
 
 function isActive()
 	return getgenv().__SIGMA_FISH_RUNNING and getgenv().__SIGMA_FISH_RUN_ID == RUN.id
@@ -290,10 +321,68 @@ function findRod()
 	end
 end
 
+function rodUnlocked(rodName)
+	local cat = getWeaponsCat(FISH.ROD_CAT)
+	return cat and cat[rodName] == true
+end
+
+function rodEquippedName(rodName)
+	return getEquippedName(FISH.ROD_CAT) == rodName
+end
+
+function bestRodName()
+	for _, rodName in ipairs(FISH.RODS) do
+		if rodUnlocked(rodName) or rodEquippedName(rodName) or findTool(rodName) then
+			return rodName
+		end
+	end
+	return select(2, findRod())
+end
+
+function ensureRodLoadout(rodName)
+	if not rodName then return false end
+	local hasTool = findTool(rodName) ~= nil
+	local unlocked = rodUnlocked(rodName) or rodEquippedName(rodName)
+	if not hasTool and not unlocked then return false end
+	local _, curName = findRod()
+	if curName == rodName and hasTool then return true end
+	if unlocked or hasTool then
+		exec("Equip", { rodName, equipCatKey(FISH.ROD_CAT) })
+		task.wait(0.35)
+	end
+	return findTool(rodName) ~= nil
+end
+
+function ensureBestRodLoadout()
+	local best = bestRodName()
+	if best and ensureRodLoadout(best) then return true end
+	for _, rodName in ipairs(FISH.RODS) do
+		if rodUnlocked(rodName) or findTool(rodName) then
+			if ensureRodLoadout(rodName) then return true end
+		end
+	end
+	return findRod() ~= nil
+end
+
 function equipRod(name)
-	if not name then return findRod() end
-	if findTool(name) then exec("Equip", { name, FISH.ROD_CAT }) task.wait(0.3) end
-	return findRod()
+	if name then ensureRodLoadout(name) end
+	return equipBestRod()
+end
+
+function ensureRodReady()
+	local rod = findRod()
+	local want = bestRodName()
+	if want and (not rod or select(2, findRod()) ~= want) then
+		ensureRodLoadout(want)
+		rod = findRod()
+	end
+	if not rod then
+		ensureBestRodLoadout()
+		rod = findRod()
+	end
+	if not rod then return nil end
+	if rodHeld(rod) then return rod end
+	return equipBestRod()
 end
 
 function isFishTool(name)
@@ -371,6 +460,371 @@ function hasItem(name)
 	return false
 end
 
+function normMob(s)
+	s = string.lower(tostring(s or ""))
+	s = string.gsub(s, "[^%w%s]", " ")
+	s = string.gsub(s, "%s+", " ")
+	return s
+end
+
+function findToolByName(name)
+	local want = string.lower(name)
+	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
+		if where then
+			for _, t in ipairs(where:GetChildren()) do
+				if t:IsA("Tool") and string.lower(t.Name) == want then return t end
+			end
+		end
+	end
+end
+
+function getWeaponsCat(category)
+	local d = getData()
+	if not d or not d.Weapons then return nil, nil end
+	local aliases = COMBAT.CAT_ALIASES[category] or { category }
+	for _, key in ipairs(aliases) do
+		if type(d.Weapons[key]) == "table" then return d.Weapons[key], key end
+	end
+	for key, tbl in pairs(d.Weapons) do
+		if type(tbl) == "table" and string.lower(tostring(key)) == string.lower(tostring(category)) then
+			return tbl, key
+		end
+	end
+	return nil, nil
+end
+
+function getEquippedName(category)
+	local d = getData()
+	if not d or not d.Equipped then return nil end
+	local aliases = COMBAT.CAT_ALIASES[category] or { category }
+	for _, key in ipairs(aliases) do
+		local v = d.Equipped[key]
+		if type(v) == "string" and v ~= "" then return v end
+	end
+	for key, v in pairs(d.Equipped) do
+		if type(v) == "string" and v ~= "" and string.lower(tostring(key)) == string.lower(tostring(category)) then
+			return v
+		end
+	end
+	return nil
+end
+
+function weaponCategoryFor(name, category)
+	if category then return category end
+	return COMBAT.CATEGORY[name]
+end
+
+function equipCatKey(category)
+	local _, key = getWeaponsCat(category)
+	return key or category
+end
+
+function weaponUnlocked(name, category)
+	category = weaponCategoryFor(name, category)
+	if not category then return false end
+	local cat = getWeaponsCat(category)
+	return cat and cat[name] == true
+end
+
+function weaponEquipped(name, category)
+	category = weaponCategoryFor(name, category)
+	if not category then return false end
+	return getEquippedName(category) == name
+end
+
+function hasWeapon(name, category)
+	category = weaponCategoryFor(name, category)
+	if findToolByName(name) then return true end
+	if category and weaponUnlocked(name, category) then return true end
+	if category and weaponEquipped(name, category) then return true end
+	return false
+end
+
+function ensureWeaponLoadout(name, category)
+	category = weaponCategoryFor(name, category)
+	if not name or not category then return false end
+	if findToolByName(name) then return true end
+	if not weaponUnlocked(name, category) and not weaponEquipped(name, category) then return false end
+	exec("Equip", { name, equipCatKey(category) })
+	task.wait(0.35)
+	return findToolByName(name) ~= nil
+end
+
+function bestWeaponInCategory(category)
+	local list = COMBAT.PRIORITY[category]
+	if list then
+		for i = #list, 1, -1 do
+			local n = list[i]
+			if hasWeapon(n, category) then return n, category end
+		end
+	end
+	local cat = getWeaponsCat(category)
+	if type(cat) ~= "table" then return nil, nil end
+	local bestName, bestRank = nil, 0
+	for n, ok in pairs(cat) do
+		if ok then
+			local info = COMBAT.RANK[string.lower(n)]
+			local r = info and info.rank or 1
+			if r >= bestRank then bestName, bestRank = n, r end
+		end
+	end
+	if bestName then return bestName, category end
+	return nil, nil
+end
+
+function bestCombatWeapon()
+	for _, cat in ipairs(COMBAT.ORDER) do
+		local n, c = bestWeaponInCategory(cat)
+		if n then return n, c end
+	end
+	return nil, nil
+end
+
+function ensureBestCombatLoadout()
+	local want, cat = bestCombatWeapon()
+	if want and ensureWeaponLoadout(want, cat) then return true end
+	for _, c in ipairs(COMBAT.ORDER) do
+		local n = select(1, bestWeaponInCategory(c))
+		if n and ensureWeaponLoadout(n, c) then return true end
+	end
+	return findToolByName(select(1, bestCombatWeapon())) ~= nil
+end
+
+function combatToolHeld(tool)
+	return tool and player.Character and tool.Parent == player.Character
+end
+
+function equipCombatTool(name, category)
+	if not name then return nil end
+	category = weaponCategoryFor(name, category)
+	ensureWeaponLoadout(name, category)
+	local tool = findToolByName(name)
+	if not tool then return nil end
+	if combatToolHeld(tool) then return tool end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return nil end
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") and t ~= tool then
+			pcall(function() hum:UnequipTools() end)
+			task.wait(0.06)
+			break
+		end
+	end
+	pcall(function() hum:EquipTool(tool) end)
+	local t0 = os.clock()
+	while isActive() and not combatToolHeld(tool) and os.clock() - t0 < 1.5 do
+		task.wait(0.05)
+	end
+	if not combatToolHeld(tool) then
+		pcall(function() tool.Parent = char end)
+		task.wait(0.1)
+		pcall(function() hum:EquipTool(tool) end)
+		task.wait(0.08)
+	end
+	return combatToolHeld(tool) and tool or nil
+end
+
+function ensureCombatReady()
+	local want, cat = bestCombatWeapon()
+	if want then
+		local tool = findToolByName(want)
+		if not tool or getEquippedName(cat) ~= want then
+			ensureWeaponLoadout(want, cat)
+		end
+	end
+	if not findToolByName(want) then ensureBestCombatLoadout() end
+	want, cat = bestCombatWeapon()
+	if not want then
+		local char = player.Character
+		if char then
+			for _, t in ipairs(char:GetChildren()) do
+				if isCombatTool(t) then return t end
+			end
+		end
+		local bp = player:FindFirstChild("Backpack")
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if isCombatTool(t) then return equipCombatTool(t.Name, weaponCategoryFor(t.Name)) end
+			end
+		end
+		return nil
+	end
+	return equipCombatTool(want, cat)
+end
+
+function isCombatTool(tool)
+	if not tool or not tool:IsA("Tool") then return false end
+	local low = string.lower(tool.Name)
+	if string.find(low, "rod", 1, true) then return false end
+	for _, b in ipairs(QUEST.COLLECT_BLOCK) do
+		if string.find(low, b, 1, true) then return false end
+	end
+	for _, fish in ipairs(FISH.TASK_FISH) do
+		if string.lower(fish) == low then return false end
+	end
+	for _, info in pairs(QUEST.DB) do
+		if type(info.deliverItems) == "table" then
+			for _, it in ipairs(info.deliverItems) do
+				if string.lower(it) == low then return false end
+			end
+		end
+		if info.carryItem and string.lower(info.carryItem) == low then return false end
+	end
+	return true
+end
+
+function equipCombat()
+	return ensureCombatReady()
+end
+
+function getAliveRoot()
+	return workspace:FindFirstChild("Alive")
+		or (workspace:FindFirstChild("Terrain") and workspace.Terrain:FindFirstChild("Alive"))
+		or workspace
+end
+
+function getAliveEnemies()
+	local root = getAliveRoot()
+	local skip = {}
+	for npc in pairs(QUEST.DB) do skip[normMob(npc)] = true end
+	for _, p in ipairs(Players:GetPlayers()) do
+		skip[normMob(p.Name)] = true
+		skip[normMob(p.DisplayName)] = true
+	end
+	local out, seen = {}, {}
+	for _, m in root:GetDescendants() do
+		if m:IsA("Model") and not seen[m] and m ~= player.Character then
+			seen[m] = true
+			local hum = m:FindFirstChildOfClass("Humanoid")
+			local hrp = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart", true)
+			if hum and hrp and hum.Health > 0 then
+				local n = normMob(m.Name)
+				if not m:GetAttribute("DialogueModule") and not skip[n] then
+					out[#out + 1] = m
+				end
+			end
+		end
+	end
+	return out
+end
+
+function getMobGroups(info)
+	local groups = {}
+	if info and type(info.mobs) == "table" then
+		for _, phrase in ipairs(info.mobs) do
+			local words = {}
+			for word in string.gmatch(normMob(phrase), "%w+") do words[#words + 1] = word end
+			if #words > 0 then groups[#groups + 1] = words end
+		end
+	end
+	return groups
+end
+
+function mobMatches(name, words)
+	for _, w in ipairs(words) do
+		if not string.find(name, w, 1, true) then return false end
+	end
+	return true
+end
+
+function isQuestMob(mob, groups)
+	local n = normMob(mob.Name)
+	for _, words in ipairs(groups) do
+		if mobMatches(n, words) then return true end
+	end
+	return false
+end
+
+function nearestQuestMob(groups)
+	local hrp = getHRP()
+	if not hrp then return nil end
+	local best, bestD = nil, nil
+	for _, mob in ipairs(getAliveEnemies()) do
+		if isQuestMob(mob, groups) then
+			local pos = getPos(mob)
+			if pos then
+				local d = (hrp.Position - pos).Magnitude
+				if d <= QUEST.TARGET_SCAN and (not bestD or d < bestD) then
+					best, bestD = mob, d
+				end
+			end
+		end
+	end
+	return best
+end
+
+function tpNearMob(mob)
+	local hrp = getHRP()
+	local mobRoot = mob and (mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true))
+	if not hrp or not mobRoot then return false end
+	local pos = mobRoot.Position
+	local dir = hrp.Position - pos
+	if dir.Magnitude < 0.5 then dir = Vector3.new(0, 0, 1) else dir = dir.Unit end
+	local stand = pos + dir * QUEST.ATTACK_RANGE + Vector3.new(0, 2, 0)
+	pcall(function() hrp.CFrame = CFrame.new(stand, Vector3.new(pos.X, stand.Y, pos.Z)) end)
+	return true
+end
+
+function m1Attack()
+	if VirtualUser then
+		local cam = workspace.CurrentCamera
+		if cam then
+			pcall(function()
+				VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
+				task.wait(0.03)
+				VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
+			end)
+			return
+		end
+	end
+	local tool = player.Character and player.Character:FindFirstChildOfClass("Tool")
+	if tool and isCombatTool(tool) then pcall(function() tool:Activate() end) end
+end
+
+function attackBurstOnMob(mob)
+	local hum = mob and mob:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return true end
+	ensureCombatReady()
+	tpNearMob(mob)
+	local t0, lastHp, stall = tick(), hum.Health, 0
+	while isActive() and tick() - t0 < QUEST.ATTACK_BURST do
+		hum = mob:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health <= 0 then return true end
+		tpNearMob(mob)
+		ensureCombatReady()
+		m1Attack()
+		task.wait(QUEST.ATTACK_CD)
+		if hum.Health <= 0 then return true end
+		if hum.Health >= lastHp then
+			stall += QUEST.ATTACK_CD
+			if stall >= 2 then tpNearMob(mob) stall = 0 end
+		else
+			lastHp, stall = hum.Health, 0
+		end
+	end
+	hum = mob:FindFirstChildOfClass("Humanoid")
+	return not hum or hum.Health <= 0
+end
+
+function stepFarmQuest(npc, info)
+	local groups = getMobGroups(info)
+	if #groups < 1 then return false end
+	ensureCombatReady()
+	local mob = nearestQuestMob(groups)
+	if not mob then return false end
+	return attackBurstOnMob(mob)
+end
+
+function questInfoNeedsKill(info)
+	if not info then return false end
+	local kind = info.kind
+	if kind == "mob" or kind == "sam" then
+		return type(info.mobs) == "table" and #info.mobs > 0
+	end
+	return false
+end
+
 function getBobber()
 	local rope = workspace:FindFirstChild("FishingRope_" .. tostring(player.UserId))
 	if not rope then
@@ -393,13 +847,32 @@ function rodHeld(rod)
 end
 
 function equipBestRod()
-	local rod = select(1, findRod())
+	ensureBestRodLoadout()
+	local bestName = bestRodName()
+	local rod = (bestName and findTool(bestName)) or select(1, findRod())
 	if not rod then return nil end
 	if rodHeld(rod) then return rod end
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then pcall(function() hum:EquipTool(rod) end) end
-	task.wait(0.1)
-	if not rodHeld(rod) then pcall(function() rod.Parent = player.Character hum:EquipTool(rod) end) end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return nil end
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") and t ~= rod then
+			pcall(function() hum:UnequipTools() end)
+			task.wait(0.06)
+			break
+		end
+	end
+	pcall(function() hum:EquipTool(rod) end)
+	local t0 = os.clock()
+	while isActive() and FISH.ON and not rodHeld(rod) and os.clock() - t0 < 1.5 do
+		task.wait(0.05)
+	end
+	if not rodHeld(rod) then
+		pcall(function() rod.Parent = char end)
+		task.wait(0.1)
+		pcall(function() hum:EquipTool(rod) end)
+		task.wait(0.08)
+	end
 	return rodHeld(rod) and rod or nil
 end
 
@@ -1041,31 +1514,47 @@ function fireCollectAt(item)
 	local pos = getPos(item)
 	local hrp = getHRP()
 	if hrp and pos then
-		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 4, 0)) end)
-		task.wait(QUEST.COLLECT_WAIT)
+		pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, QUEST.COLLECT_TP_UP, 0)) end)
 	end
-	for _ = 1, 2 do
-		for _, cd in ipairs(cds) do safeFireClick(cd) end
-		for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
-		task.wait(0.05)
-	end
+	for _, cd in ipairs(cds) do safeFireClick(cd) end
+	for _, pr in ipairs(prompts) do safeFirePrompt(pr) end
 	return true
 end
 
-function stepCollectQuest(npc, info)
-	if questDone() then return false end
+function nearestCollectibles(info, limit)
+	local hrp = getHRP()
+	if not hrp then return {} end
+	local arr = {}
 	for _, fp in ipairs(info.collectFolders or {}) do
 		local folder = resolvePath(fp)
 		if folder then
 			for _, item in ipairs(folder:GetChildren()) do
-				if not isActive() or questDone() then return false end
-				if not collectNameBlocked(item.Name) and fireCollectAt(item) then
-					return true
+				if not collectNameBlocked(item.Name) then
+					local pos = getPos(item)
+					if pos then
+						arr[#arr + 1] = { item = item, d = (hrp.Position - pos).Magnitude }
+					end
 				end
 			end
 		end
 	end
-	return false
+	table.sort(arr, function(a, b) return a.d < b.d end)
+	local out = {}
+	limit = limit or QUEST.COLLECT_BATCH
+	for i = 1, math.min(limit, #arr) do out[i] = arr[i].item end
+	return out
+end
+
+function stepCollectQuest(npc, info)
+	if questDone() then return false end
+	local batch = nearestCollectibles(info, QUEST.COLLECT_BATCH)
+	if #batch < 1 then return false end
+	local n = 0
+	for _, item in ipairs(batch) do
+		if not isActive() or questDone() then break end
+		if fireCollectAt(item) then n += 1 end
+	end
+	return n > 0
 end
 
 function stepReachQuest(info)
@@ -1086,14 +1575,34 @@ end
 function stepReachAllQuest(info)
 	local folder = resolvePath(info.folder)
 	if not folder then return false end
+	local hrp = getHRP()
+	if not hrp then return false end
+	local parts = {}
 	for _, p in ipairs(folder:GetDescendants()) do
-		if not isActive() or questDone() then return false end
-		if p:IsA("BasePart") then
-			local hrp = getHRP()
-			if hrp then pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, 4, 0)) end) end
-			task.wait(0.08)
-		end
+		if p:IsA("BasePart") then parts[#parts + 1] = p end
 	end
+	local idx = (STATE.reachIdx or 0) % math.max(#parts, 1)
+	STATE.reachIdx = idx + 1
+	local p = parts[idx + 1]
+	if p then pcall(function() hrp.CFrame = CFrame.new(p.Position + Vector3.new(0, QUEST.COLLECT_TP_UP, 0)) end) end
+	return #parts > 0
+end
+
+function activeQuestInDB(q)
+	if not q or not q.Active or q.Active == "" then return nil, nil end
+	for npc, info in pairs(QUEST.DB) do
+		if info.quest == q.Active then return npc, info end
+	end
+	return nil, nil
+end
+
+function questWorkActive()
+	if not (QUEST.AUTO or QUEST.EXPERTISE) then return false end
+	local q = getQuests()
+	if not q or not q.Active or q.Active == "" then return false end
+	local _, info = activeQuestInDB(q)
+	if not info then return false end
+	if q.Completed then return not info.noClaim end
 	return true
 end
 
@@ -1124,26 +1633,22 @@ function stepActiveQuest(npc, info)
 		return stepReachQuest(info)
 	elseif kind == "reachAll" then
 		return stepReachAllQuest(info)
+	elseif questInfoNeedsKill(info) then
+		return stepFarmQuest(npc, info)
 	end
 	return false
 end
 
 function runQuestList(list)
 	list = normalizeQuestPick(list)
-	if #list < 1 then return end
 	local q = getQuests()
 	if not q then return end
-	local npc, info = activeQuestInList(q, list)
+	local npc, info = activeQuestInDB(q)
 	if npc then
 		stepActiveQuest(npc, info)
 		return
 	end
-	if q.Active and q.Active ~= "" then
-		for _, name in ipairs(list) do
-			local inf = QUEST.DB[name]
-			if inf and inf.quest == q.Active then return end
-		end
-	end
+	if #list < 1 then return end
 	tryAcceptQuestList(list)
 end
 
@@ -1242,7 +1747,7 @@ function cookAndSell(force)
 		task.wait(0.35)
 		remoteSell()
 		restoreFish(stashed)
-		equipBestRod()
+		ensureRodReady()
 	end)
 	STATE.cooking = false
 	STATE.pause = false
@@ -1260,10 +1765,10 @@ function castLoop()
 			elseif miniOpen() then
 				if not STATE.solving then solveMini() end
 				task.wait(0.18)
-			elseif not findRod() then
+			elseif not ensureRodReady() then
 				task.wait(1)
 			else
-				local rod = equipBestRod()
+				local rod = ensureRodReady()
 				if rod and not lineOut() and not miniOpen() then
 					clickRod(rod)
 					waitUntil(function() return lineOut() or miniOpen() end, FISH.CAST_TIMEOUT)
@@ -1271,10 +1776,10 @@ function castLoop()
 					local before = STATE.fishCount or 0
 					waitUntil(function() return onHook() or miniOpen() or not lineOut() end, FISH.BITE_TIMEOUT)
 					if onHook() and not miniOpen() then
-						clickRod(equipBestRod() or rod)
+						clickRod(ensureRodReady() or rod)
 						waitUntil(function() return not lineOut() or miniOpen() or (STATE.fishCount or 0) > before end, FISH.REEL_TIMEOUT)
 					elseif lineOut() then
-						clickRod(equipBestRod() or rod)
+						clickRod(ensureRodReady() or rod)
 						waitUntil(function() return not lineOut() end, FISH.REEL_TIMEOUT)
 					end
 				end
@@ -1297,7 +1802,7 @@ function fishStep()
 	end
 
 	if not findRod() then
-		equipBestRod()
+		ensureBestRodLoadout()
 		if not findRod() and not qHist(FISH.Q_FAVOR) then
 			castLoop()
 			return
@@ -1308,7 +1813,7 @@ function fishStep()
 	if rodQuestActive() then
 		runRodQuestChain()
 	end
-	equipBestRod()
+	ensureRodReady()
 
 	if not fishAllowed() then
 		castLoop()
@@ -1385,7 +1890,7 @@ function hubTick()
 	elseif QUEST.AUTO then
 		stepPickedQuests()
 	end
-	if FISH.ON then fishStep() end
+	if FISH.ON and not questWorkActive() then fishStep() end
 end
 
 function startLoop()
@@ -1501,6 +2006,9 @@ function SigmaFish.getStatus()
 		questDone = qHist(FISH.Q_CHALLENGE),
 		sellable = countSellable(),
 		hasRod = findRod() ~= nil,
+		bestRod = bestRodName(),
+		rodHeld = rodHeld(select(1, findRod())),
+		bestWeapon = select(1, bestCombatWeapon()),
 	}
 end
 
