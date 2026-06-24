@@ -93,6 +93,8 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoSkill = cfg.AutoSkill == true
 	cfg.SkillHoldSec = tonumber(cfg.SkillHoldSec) or 0.5
 	cfg.SkillKeys = cfg.SkillKeys or {}
+	cfg.AutoWhitelistRejoin = cfg.AutoWhitelistRejoin == true
+	cfg.RejoinWhitelist = tostring(cfg.RejoinWhitelist or "")
 	cfg.AffinityMelee = cfg.AffinityMelee
 	cfg.AffinitySword = cfg.AffinitySword
 	cfg.AffinitySniper = cfg.AffinitySniper
@@ -225,6 +227,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoAffinityToggle, hideNameToggle, hakiStatusPara
 	local autoClaimSamToggle, autoDropCompassToggle, autoFindSamToggle
 	local autoSkillToggle, skillKeysDropdown, skillHoldInput
+	local autoWhitelistToggle, rejoinWhitelistInput
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -526,12 +529,24 @@ function SigmaUI.build(hub, Fish, opts)
 			Callback = function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.AutoSkill = v == true
+				applySkillHoldFromUI()
 				if Fish and Fish.setAutoSkill then Fish.setAutoSkill(v) end
 				notify(hub, "Auto Skill", v and "ON" or "OFF", "zap", 2)
 			end,
 		})
 
 		local skillKeyOptions = { "Z", "X", "C", "V", "B", "N", "F", "G", "H", "J", "K", "L" }
+		local function applySkillHoldFromUI()
+			if not skillHoldInput then return end
+			local raw = skillHoldInput.Value
+			if type(raw) == "string" then raw = raw:match("^%s*(.-)%s*$") end
+			local n = tonumber(raw)
+			if n == nil or n < 0 then return end
+			getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+			getgenv().SigmaFishConfig.SkillHoldSec = n
+			if Fish and Fish.setSkillHoldSec then Fish.setSkillHoldSec(n) end
+		end
+
 		local skillPick = cfg.SkillKeys
 		if type(skillPick) ~= "table" or not skillPick[1] then
 			skillPick = {}
@@ -551,6 +566,7 @@ function SigmaUI.build(hub, Fish, opts)
 			Callback = function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SkillKeys = v
+				applySkillHoldFromUI()
 				if Fish and Fish.setSkillKeys then Fish.setSkillKeys(v) end
 			end,
 		})
@@ -561,8 +577,9 @@ function SigmaUI.build(hub, Fish, opts)
 			Value = tostring(cfg.SkillHoldSec or 0.5),
 			Flag = "Sigma_SkillHoldSec",
 			Callback = function(v)
+				if type(v) == "string" then v = v:match("^%s*(.-)%s*$") end
 				local n = tonumber(v)
-				if not n or n < 0 then return end
+				if n == nil or n < 0 then return end
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 				getgenv().SigmaFishConfig.SkillHoldSec = n
 				if Fish and Fish.setSkillHoldSec then Fish.setSkillHoldSec(n) end
@@ -615,6 +632,58 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.AutoAffinity = v == true
 				if Fish and Fish.setAutoAffinity then Fish.setAutoAffinity(v) end
 				notify(hub, "Auto Affinity", v and "ON (slot 1)" or "OFF", "sparkles", 2)
+			end,
+		})
+
+		SettingsTab:Section({ Title = "Auto Rejoin", Icon = "shield-check", Box = true, BoxBorder = true })
+
+		SettingsTab:Paragraph({
+			Title = "Whitelist",
+			Desc = "Điền tên player được phép (phân cách bằng dấu phẩy). Có người lạ → rejoin ngay.",
+		})
+
+		rejoinWhitelistInput = SettingsTab:Input({
+			Title = "Player Whitelist",
+			Placeholder = "Friend1, Friend2, AltAccount",
+			Value = cfg.RejoinWhitelist or "",
+			Flag = "Sigma_RejoinWhitelist",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.RejoinWhitelist = tostring(v or "")
+				if Fish and Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(v) end
+			end,
+		})
+
+		autoWhitelistToggle = SettingsTab:Toggle({
+			Title = "Auto Whitelist Rejoin",
+			Value = cfg.AutoWhitelistRejoin == true,
+			Default = false,
+			Flag = "Sigma_AutoWhitelistRejoin",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoWhitelistRejoin = v == true
+				if rejoinWhitelistInput and rejoinWhitelistInput.Value ~= nil then
+					getgenv().SigmaFishConfig.RejoinWhitelist = tostring(rejoinWhitelistInput.Value or "")
+					if Fish and Fish.setRejoinWhitelist then
+						Fish.setRejoinWhitelist(rejoinWhitelistInput.Value)
+					end
+				end
+				if Fish and Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(v) end
+				notify(hub, "Whitelist Rejoin", v and "ON" or "OFF", "shield-check", 2)
+			end,
+		})
+
+		SettingsTab:Button({
+			Title = "Rejoin Server",
+			Icon = "refresh-cw",
+			Color = PRIMARY,
+			Callback = function()
+				if not Fish or not Fish.rejoinServer then
+					notify(hub, "Rejoin", "Backend not loaded", "triangle-alert")
+					return
+				end
+				local ok = Fish.rejoinServer()
+				notify(hub, "Rejoin", ok and "Teleporting..." or "Already pending", "refresh-cw", 2)
 			end,
 		})
 
@@ -745,6 +814,12 @@ function SigmaUI.build(hub, Fish, opts)
 			local n = tonumber(skillHoldInput.Value)
 			if n and n >= 0 then c.SkillHoldSec = n end
 		end
+		if autoWhitelistToggle and autoWhitelistToggle.Value ~= nil then
+			c.AutoWhitelistRejoin = autoWhitelistToggle.Value == true
+		end
+		if rejoinWhitelistInput and rejoinWhitelistInput.Value ~= nil then
+			c.RejoinWhitelist = tostring(rejoinWhitelistInput.Value or "")
+		end
 		getgenv().SigmaFishConfig = c
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
@@ -761,6 +836,8 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setAutoSkill then Fish.setAutoSkill(c.AutoSkill == true) end
 		if Fish.setSkillKeys then Fish.setSkillKeys(c.SkillKeys) end
 		if Fish.setSkillHoldSec then Fish.setSkillHoldSec(c.SkillHoldSec) end
+		if Fish.setRejoinWhitelist then Fish.setRejoinWhitelist(c.RejoinWhitelist) end
+		if Fish.setAutoWhitelistRejoin then Fish.setAutoWhitelistRejoin(c.AutoWhitelistRejoin == true) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
