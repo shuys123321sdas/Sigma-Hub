@@ -96,11 +96,16 @@ CACHE = {
 	USE_CLICKS = 3,
 	DROP_WAIT = 0.06,
 	TICK = 0.4,
+	CONSUME_BURST = 24,
+	CONSUME_TICK = 0.03,
+	CONSUME_CLICKS = 1,
 	_lastTick = 0,
+	_consumeRunId = 0,
 	_dropBusy = false,
 	CONSUME_MATCH = {
 		"smoothie", "cider", "juice", "lemonade", "milk",
 		"apple", "banana", "cantaloupe", "coconut", "melon", "pumpkin", "pear", "prickly",
+		"green apple", "drink", "food",
 	},
 	CONSUME_BLOCK = {
 		"grapple", "package", "melee", "essence", "compass", "cache", "rod",
@@ -2902,27 +2907,69 @@ function stepCacheDropSelected()
 	return cacheDropTypes(cacheDropPick(), 5)
 end
 
-function stepMiscConsumables()
-	if not CACHE.AUTO_CONSUME then return false end
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if not hum then return false end
-	local used = false
-	for _, where in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
-		if where then
-			for _, tool in ipairs(where:GetChildren()) do
-				if isMiscConsumableTool(tool) then
-					if not isActive() then return used end
-					useToolClicks(tool, hum, CACHE.USE_CLICKS)
-					used = true
-				end
+function collectMiscConsumables()
+	local out, seen = {}, {}
+	local function scan(where)
+		if not where then return end
+		for _, c in ipairs(where:GetChildren()) do
+			if c:IsA("Tool") and isMiscConsumableTool(c) and not seen[c] then
+				seen[c] = true
+				out[#out + 1] = c
 			end
 		end
 	end
-	return used
+	scan(player.Character)
+	scan(player:FindFirstChild("Backpack"))
+	return out
+end
+
+function flashUseConsumable(tool, hum, clicks)
+	if not tool or not hum then return false end
+	pcall(function() hum:EquipTool(tool) end)
+	local n = clicks or CACHE.CONSUME_CLICKS or 1
+	for _ = 1, n do
+		if not pcall(function() tool:Activate() end) then vimM1Click() end
+	end
+	return true
+end
+
+function stepMiscConsumables()
+	if not CACHE.AUTO_CONSUME then return false end
+	if not isActive() then return false end
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return false end
+	local tools = collectMiscConsumables()
+	if #tools < 1 then return false end
+	local burst = CACHE.CONSUME_BURST or 24
+	local used = 0
+	for i = 1, math.min(#tools, burst) do
+		if not isActive() then break end
+		if flashUseConsumable(tools[i], hum, CACHE.CONSUME_CLICKS) then
+			used += 1
+		end
+	end
+	return used > 0
+end
+
+function startConsumeLoop()
+	CACHE._consumeRunId = (CACHE._consumeRunId or 0) + 1
+	local run = CACHE._consumeRunId
+	task.spawn(function()
+		while getgenv().__SIGMA_HUB_RUNNING and CACHE._consumeRunId == run do
+			if CACHE.AUTO_CONSUME and isActive() then
+				pcall(stepMiscConsumables)
+			end
+			task.wait(CACHE.CONSUME_TICK or 0.03)
+		end
+	end)
+end
+
+function stopConsumeLoop()
+	CACHE._consumeRunId = (CACHE._consumeRunId or 0) + 1
 end
 
 function cacheModeEnabled()
-	return #cacheUsePick() > 0 or CACHE.AUTO_DROP or CACHE.AUTO_CONSUME
+	return #cacheUsePick() > 0 or CACHE.AUTO_DROP
 end
 
 function stepCacheFeatures()
@@ -2932,7 +2979,6 @@ function stepCacheFeatures()
 	CACHE._lastTick = now
 	if stepCacheUseSelected() then return true end
 	if stepCacheDropSelected() then return true end
-	if stepMiscConsumables() then return true end
 	return false
 end
 
@@ -5508,6 +5554,7 @@ function startHubLoop()
 	setupAntiAfk()
 	setupGrappleCleaner()
 	setupWhitelistGuard()
+	startConsumeLoop()
 	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
 		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function()
 			STATE.hakiFastPending = false
@@ -5895,6 +5942,11 @@ function SigmaFish.setAutoUseConsumables(on)
 	cfg.AutoUseConsumables = on ~= false
 	getgenv().SigmaFishConfig = cfg
 	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables
+	if CACHE.AUTO_CONSUME then
+		startConsumeLoop()
+	else
+		stopConsumeLoop()
+	end
 	ensureLoopRunning()
 end
 
@@ -5965,6 +6017,7 @@ function SigmaFish.stop()
 	REJOIN.ON = false
 	stopCompassFindLoop()
 	stopSkillLoop()
+	stopConsumeLoop()
 	HAKI.AUTO_KEN = false
 	HAKI.AUTO_BUSO = false
 	HAKI.FAST = false
