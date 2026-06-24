@@ -96,6 +96,8 @@ STATE = {
 	hideNameActive = false,
 	hideNameGuiAt = 0,
 	attackMob = nil,
+	rejoinPending = false,
+	whitelistKickAt = 0,
 }
 
 QUEST = {
@@ -245,6 +247,14 @@ SKILL = {
 	HOLD_SEC = 0.5,
 	LOOP_WAIT = 0.15,
 	KEY_GAP = 0.05,
+	_keyDown = nil,
+}
+
+REJOIN = {
+	ON = false,
+	CHECK_INTERVAL = 2,
+	KICK_COOLDOWN = 12,
+	_lastCheck = 0,
 }
 
 AFFINITY = {
@@ -3069,7 +3079,7 @@ end
 
 function hubRunning()
 	return FISH.ON or QUEST.AUTO or QUEST.EXPERTISE or hakiModeEnabled() or AFFINITY.ON
-		or SAM.ON or COMPASS.DROP_ON or COMPASS.FIND_ON or SKILL.ON
+		or SAM.ON or COMPASS.DROP_ON or COMPASS.FIND_ON or SKILL.ON or REJOIN.ON
 end
 
 function hakiModeEnabled()
@@ -3221,9 +3231,8 @@ function syncCfg()
 	end
 	if not SKILL.ON then
 		stopSkillLoop()
-	else
-		refreshSkillLoop()
 	end
+	REJOIN.ON = cfg.AutoWhitelistRejoin == true
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
 	HAKI.FAST = cfg.FastHaki == true
@@ -3427,11 +3436,36 @@ function pressKeyAction(action, hold)
 	if not UNC.vim then return false end
 	local kc = actionToKeyCode(action)
 	if not kc then return false end
-	return pcall(function()
+	hold = tonumber(hold) or 0.03
+	local ok = pcall(function()
 		VirtualInputManager:SendKeyEvent(true, kc, false, game)
-		task.wait(hold or 0.03)
+		task.wait(hold)
+	end)
+	pcall(function()
 		VirtualInputManager:SendKeyEvent(false, kc, false, game)
 	end)
+	return ok
+end
+
+function skillReleaseKey()
+	if not SKILL._keyDown or not UNC.vim then
+		SKILL._keyDown = nil
+		return
+	end
+	local kc = actionToKeyCode(SKILL._keyDown)
+	if kc then
+		pcall(function()
+			VirtualInputManager:SendKeyEvent(false, kc, false, game)
+		end)
+	end
+	SKILL._keyDown = nil
+end
+
+function skillHoldSec()
+	local cfg = getgenv().SigmaFishConfig or {}
+	local n = tonumber(cfg.SkillHoldSec)
+	if n ~= nil and n >= 0 then return n end
+	return tonumber(SKILL.HOLD_SEC) or 0.5
 end
 
 function skillContext(mob)
@@ -3470,22 +3504,37 @@ function skillActiveKeys()
 	return out
 end
 
-function pressSkillKey(key, holdSec)
-	return pressKeyAction(key, holdSec or SKILL.HOLD_SEC)
+function pressSkillKey(key)
+	if not UNC.vim then return false end
+	local kc = actionToKeyCode(key)
+	if not kc then return false end
+	skillReleaseKey()
+	local hold = skillHoldSec()
+	local ok = pcall(function()
+		VirtualInputManager:SendKeyEvent(true, kc, false, game)
+		SKILL._keyDown = key
+		task.wait(hold)
+	end)
+	skillReleaseKey()
+	return ok
 end
 
 function stepAutoSkillOnce()
 	local keys = skillActiveKeys()
 	if #keys < 1 then return end
+	local hold = skillHoldSec()
 	for _, key in ipairs(keys) do
 		if not SKILL.ON or not isActive() then break end
-		pressSkillKey(key, SKILL.HOLD_SEC)
-		task.wait(SKILL.KEY_GAP)
+		pressSkillKey(key)
+		if hold > 0 then
+			task.wait(SKILL.KEY_GAP)
+		end
 	end
 end
 
 function stopSkillLoop()
 	getgenv().__SIGMA_SKILL_LOOP = false
+	skillReleaseKey()
 end
 
 function refreshSkillLoop()
@@ -4259,7 +4308,7 @@ function hakiDrainStuck(amount, now)
 end
 
 function tryHakiRejoin()
-	if STATE.hakiFastPending then return true end
+	if STATE.hakiFastPending or STATE.rejoinPending then return true end
 	STATE.hakiFastPending = true
 	STATE.hakiLastRejoin = os.clock()
 	STATE.hakiFastRunning = false
@@ -4267,9 +4316,7 @@ function tryHakiRejoin()
 	hakiClearDrainWatch()
 	hakiClearFullSticky()
 	hakiReleaseFarm()
-	print("[Sigma Haki] fast:rejoin -> TeleportService:Teleport(game.PlaceId)")
-	pcall(function() TeleportService:Teleport(game.PlaceId) end)
-	return true
+	return sigmaRejoinServer("fast-haki")
 end
 
 function stepHakiForceOff()
@@ -4983,6 +5030,101 @@ function stepHakiFeatures()
 	end
 end
 
+function sigmaRejoinServer(reason)
+	if STATE.rejoinPending then return false end
+	STATE.rejoinPending = true
+	print(string.format("[Sigma Rejoin] %s -> TeleportService:Teleport(%s)", tostring(reason or "manual"), tostring(game.PlaceId)))
+	pcall(function() TeleportService:Teleport(game.PlaceId) end)
+	return true
+end
+
+function rejoinWhitelistNormalize(name)
+	name = string.lower(tostring(name or ""))
+	name = string.gsub(name, "^%s+", "")
+	name = string.gsub(name, "%s+$", "")
+	return name
+end
+
+function rejoinWhitelistSet()
+	local cfg = getgenv().SigmaFishConfig or {}
+	local raw = cfg.RejoinWhitelist
+	local set = {}
+	local function add(s)
+		s = rejoinWhitelistNormalize(s)
+		if s ~= "" then set[s] = true end
+	end
+	if type(raw) == "string" then
+		for part in string.gmatch(raw, "[^,\n;]+") do add(part) end
+	elseif type(raw) == "table" then
+		if raw[1] then
+			for _, v in ipairs(raw) do add(v) end
+		else
+			for k, v in pairs(raw) do
+				if v == true then add(k) end
+			end
+		end
+	end
+	add(player and player.Name or "")
+	if player and player.DisplayName and player.DisplayName ~= player.Name then
+		add(player.DisplayName)
+	end
+	return set
+end
+
+function rejoinPlayerAllowed(plr, wl)
+	if not plr or plr == player then return true end
+	wl = wl or rejoinWhitelistSet()
+	local name = rejoinWhitelistNormalize(plr.Name)
+	local disp = rejoinWhitelistNormalize(plr.DisplayName)
+	return wl[name] == true or (disp ~= "" and wl[disp] == true)
+end
+
+function findWhitelistIntruder()
+	if not REJOIN.ON then return nil end
+	local wl = rejoinWhitelistSet()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if not rejoinPlayerAllowed(plr, wl) then
+			return plr
+		end
+	end
+	return nil
+end
+
+function tryWhitelistKick(intruder, source)
+	intruder = intruder or findWhitelistIntruder()
+	if not intruder then return false end
+	local now = os.clock()
+	if now - (STATE.whitelistKickAt or 0) < REJOIN.KICK_COOLDOWN then return false end
+	STATE.whitelistKickAt = now
+	print(string.format(
+		"[Sigma Rejoin] whitelist: %s joined (not in list) [%s] -> rejoin",
+		intruder.Name, tostring(source or "check")
+	))
+	return sigmaRejoinServer("whitelist:" .. intruder.Name)
+end
+
+function stepWhitelistRejoin()
+	if not REJOIN.ON then return false end
+	local now = os.clock()
+	if now - (REJOIN._lastCheck or 0) < REJOIN.CHECK_INTERVAL then return false end
+	REJOIN._lastCheck = now
+	local intruder = findWhitelistIntruder()
+	if intruder then return tryWhitelistKick(intruder, "poll") end
+	return false
+end
+
+function setupWhitelistGuard()
+	if getgenv().__SIGMA_WHITELIST_CONN then return end
+	getgenv().__SIGMA_WHITELIST_CONN = Players.PlayerAdded:Connect(function(plr)
+		task.defer(function()
+			if not REJOIN.ON then return end
+			if not rejoinPlayerAllowed(plr) then
+				tryWhitelistKick(plr, "join")
+			end
+		end)
+	end)
+end
+
 function serviceTick()
 	if HUB.AUTO_SPAWN then
 		if ensureSpawn() then return end
@@ -5017,6 +5159,7 @@ end
 function hubTick()
 	syncCfg()
 	stepHideName()
+	if REJOIN.ON then stepWhitelistRejoin() end
 	if not isActive() then return end
 	serviceTick()
 	if spawnOpen() then return end
@@ -5034,6 +5177,7 @@ function startHubLoop()
 	getgenv().__SIGMA_FISH_RUN_ID = run
 	setupAntiAfk()
 	setupGrappleCleaner()
+	setupWhitelistGuard()
 	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
 		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function()
 			STATE.hakiFastPending = false
@@ -5210,9 +5354,35 @@ end
 
 function SigmaFish.setSkillHoldSec(sec)
 	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.SkillHoldSec = tonumber(sec) or 0.5
+	local n = tonumber(sec)
+	if n == nil or n < 0 then return end
+	cfg.SkillHoldSec = n
 	getgenv().SigmaFishConfig = cfg
-	SKILL.HOLD_SEC = cfg.SkillHoldSec
+	SKILL.HOLD_SEC = n
+end
+
+function SigmaFish.setAutoWhitelistRejoin(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoWhitelistRejoin = on == true
+	getgenv().SigmaFishConfig = cfg
+	REJOIN.ON = cfg.AutoWhitelistRejoin
+	if REJOIN.ON then
+		task.defer(function()
+			local intruder = findWhitelistIntruder()
+			if intruder then tryWhitelistKick(intruder, "enable") end
+		end)
+	end
+	ensureLoopRunning()
+end
+
+function SigmaFish.setRejoinWhitelist(text)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.RejoinWhitelist = tostring(text or "")
+	getgenv().SigmaFishConfig = cfg
+end
+
+function SigmaFish.rejoinServer()
+	return sigmaRejoinServer("manual")
 end
 
 function SigmaFish.setAutoKenbunshoku(on)
@@ -5320,6 +5490,8 @@ function SigmaFish.applyConfig()
 	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
 	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
+	if cfg.AutoWhitelistRejoin == nil then cfg.AutoWhitelistRejoin = false end
+	if cfg.RejoinWhitelist == nil then cfg.RejoinWhitelist = "" end
 	getgenv().SigmaFishConfig = cfg
 	QUEST.PICK = cfg.QuestPick
 	local wantAuto = cfg.AutoQuest == true
@@ -5385,6 +5557,10 @@ function SigmaFish.applyConfig()
 	end
 	if not wantSkill then stopSkillLoop() end
 	if not wantFind then stopCompassFindLoop() end
+	local wantWl = cfg.AutoWhitelistRejoin == true
+	if wantWl ~= REJOIN.ON and SigmaFish.setAutoWhitelistRejoin then
+		SigmaFish.setAutoWhitelistRejoin(wantWl)
+	elseif wantWl then REJOIN.ON = true end
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
@@ -5460,10 +5636,12 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig.AutoDropCompass = false
 	getgenv().SigmaFishConfig.AutoFindSam = false
 	getgenv().SigmaFishConfig.AutoSkill = false
+	getgenv().SigmaFishConfig.AutoWhitelistRejoin = false
 	SAM.ON = false
 	COMPASS.DROP_ON = false
 	COMPASS.FIND_ON = false
 	SKILL.ON = false
+	REJOIN.ON = false
 	stopCompassFindLoop()
 	stopSkillLoop()
 	HAKI.AUTO_KEN = false
@@ -5508,6 +5686,8 @@ do
 	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
 	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
+	if cfg.AutoWhitelistRejoin == nil then cfg.AutoWhitelistRejoin = false end
+	if cfg.RejoinWhitelist == nil then cfg.RejoinWhitelist = "" end
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	syncCfg()
