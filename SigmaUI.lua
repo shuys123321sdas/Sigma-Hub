@@ -85,6 +85,11 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoBusoshoku = cfg.AutoBusoshoku == true
 	cfg.FastHaki = cfg.FastHaki == true
 	cfg.AutoRayleigh = cfg.AutoRayleigh == true
+	cfg.AutoAffinity = cfg.AutoAffinity == true
+	cfg.AffinityMelee = cfg.AffinityMelee
+	cfg.AffinitySword = cfg.AffinitySword
+	cfg.AffinitySniper = cfg.AffinitySniper
+	cfg.AffinityDefense = cfg.AffinityDefense
 	cfg.SellAt = tonumber(cfg.SellAt) or 40
 	cfg.QuestPick = cfg.QuestPick or {}
 	cfg.Theme = cfg.Theme or "Sigma"
@@ -201,12 +206,14 @@ function SigmaUI.build(hub, Fish, opts)
 	local FishTab = Window:Tab({ Title = "Fishing", Icon = "fish" })
 	local QuestTab = Window:Tab({ Title = "Quest", Icon = "list" })
 	local HakiTab = Window:Tab({ Title = "Haki", Icon = "zap" })
+	local LucyTab = Window:Tab({ Title = "Lucy", Icon = "sparkles" })
 	local SettingsTab = Window:Tab({ Title = "Settings", Icon = "settings" })
 
 	uiLog(opts, "Populating tab controls (sync)...")
 	local autoFishToggle, autoCookToggle, autoQuestToggle, autoExpertiseToggle, questDropdown
 	local autoSpawnToggle, antiAfkToggle, themeDropdown, autoReloadToggle
 	local autoKenToggle, autoBusoToggle, fastHakiToggle, autoRayleighToggle
+	local autoAffinityToggle
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -403,6 +410,55 @@ function SigmaUI.build(hub, Fish, opts)
 			end,
 		})
 
+		LucyTab:Section({ Title = "Affinity Roll", Icon = "sparkles", Box = true, BoxBorder = true })
+
+		LucyTab:Paragraph({
+			Title = "Note",
+			Desc = "Auto roll slot 1 (Reroll1). Remote roll — no need to TP to Lucy.",
+		})
+
+		local function affinityInput(stat, placeholder)
+			local cfgKey = "Affinity" .. stat
+			local val = cfg[cfgKey]
+			LucyTab:Input({
+				Title = stat,
+				Placeholder = placeholder,
+				Value = val ~= nil and tostring(val) or "",
+				Flag = "Sigma_Affinity_" .. stat,
+				Callback = function(v)
+					getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+					local n = tonumber(v)
+					if v == "" or v == nil then
+						getgenv().SigmaFishConfig[cfgKey] = nil
+					elseif n and n > 0 then
+						getgenv().SigmaFishConfig[cfgKey] = n
+					else
+						return
+					end
+					if Fish and Fish.setAffinityTarget then
+						Fish.setAffinityTarget(stat, getgenv().SigmaFishConfig[cfgKey])
+					end
+				end,
+			})
+		end
+
+		affinityInput("Melee", "1.7")
+		affinityInput("Sword", "1.3")
+		affinityInput("Sniper", "1.3")
+		affinityInput("Defense", "1.3")
+
+		autoAffinityToggle = LucyTab:Toggle({
+			Title = "Auto Affinity",
+			Value = cfg.AutoAffinity,
+			Flag = "Sigma_AutoAffinity",
+			Callback = function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.AutoAffinity = v == true
+				if Fish and Fish.setAutoAffinity then Fish.setAutoAffinity(v) end
+				notify(hub, "Auto Affinity", v and "ON (slot 1)" or "OFF", "sparkles", 2)
+			end,
+		})
+
 		SettingsTab:Section({ Title = "Appearance", Icon = "palette", Box = true, BoxBorder = true })
 
 		themeDropdown = SettingsTab:Dropdown({
@@ -484,11 +540,12 @@ function SigmaUI.build(hub, Fish, opts)
 		Fishing = countElements(FishTab),
 		Quest = countElements(QuestTab),
 		Haki = countElements(HakiTab),
+		Lucy = countElements(LucyTab),
 		Settings = countElements(SettingsTab),
 	}
 	uiLog(opts, string.format(
-		"Elements — Main:%d Fishing:%d Quest:%d Haki:%d Settings:%d",
-		counts.Main, counts.Fishing, counts.Quest, counts.Haki, counts.Settings
+		"Elements — Main:%d Fishing:%d Quest:%d Haki:%d Lucy:%d Settings:%d",
+		counts.Main, counts.Fishing, counts.Quest, counts.Haki, counts.Lucy, counts.Settings
 	))
 
 	getgenv().__SIGMA_UI_COUNTS = counts
@@ -516,6 +573,7 @@ function SigmaUI.build(hub, Fish, opts)
 		if autoBusoToggle and autoBusoToggle.Value ~= nil then c.AutoBusoshoku = autoBusoToggle.Value == true end
 		if fastHakiToggle and fastHakiToggle.Value ~= nil then c.FastHaki = fastHakiToggle.Value == true end
 		if autoRayleighToggle and autoRayleighToggle.Value ~= nil then c.AutoRayleigh = autoRayleighToggle.Value == true end
+		if autoAffinityToggle and autoAffinityToggle.Value ~= nil then c.AutoAffinity = autoAffinityToggle.Value == true end
 		getgenv().SigmaFishConfig = c
 		if Fish.setAutoQuest then Fish.setAutoQuest(c.AutoQuest == true) end
 		if Fish.setAutoExpertise then Fish.setAutoExpertise(c.AutoExpertise == true) end
@@ -524,6 +582,7 @@ function SigmaUI.build(hub, Fish, opts)
 		if Fish.setAutoBusoshoku then Fish.setAutoBusoshoku(c.AutoBusoshoku == true) end
 		if Fish.setFastHaki then Fish.setFastHaki(c.FastHaki == true) end
 		if Fish.setAutoRayleigh then Fish.setAutoRayleigh(c.AutoRayleigh == true) end
+		if Fish.setAutoAffinity then Fish.setAutoAffinity(c.AutoAffinity == true) end
 		if Fish.applyConfig then Fish.applyConfig() end
 		uiLog(opts, "Config synced from UI toggles")
 	end)
@@ -534,6 +593,7 @@ function SigmaUI.build(hub, Fish, opts)
 		hideEmptyPlaceholder(FishTab)
 		hideEmptyPlaceholder(QuestTab)
 		hideEmptyPlaceholder(HakiTab)
+		hideEmptyPlaceholder(LucyTab)
 		hideEmptyPlaceholder(SettingsTab)
 
 		if Window.SelectTab and MainTab.Index then
