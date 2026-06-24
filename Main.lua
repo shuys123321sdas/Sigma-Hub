@@ -1,4 +1,5 @@
---[[ Main.lua — Sigma Hub fishing (stand still, cast in place) ]]
+--[[ Main.lua — Sigma Hub BACKEND (fishing, quest, combat) — NOT SigmaUI.lua ]]
+-- SIGMA_MODULE=backend
 
 if type(getgenv) ~= "function" then getgenv = function() return _G end end
 if type(task) ~= "table" then task = { wait = wait, spawn = function(f) coroutine.wrap(f)() end } end
@@ -1848,6 +1849,7 @@ end
 function runQuestList(list)
 	if not questModeEnabled() then return end
 	list = normalizeQuestPick(list)
+	if #list < 1 then return end
 	local q = getQuests()
 	if not q then return end
 	local npc, info = activeQuestInList(q, list)
@@ -1855,10 +1857,7 @@ function runQuestList(list)
 		stepActiveQuest(npc, info)
 		return
 	end
-	if q.Active and q.Active ~= "" then
-		return
-	end
-	if #list < 1 then return end
+	-- Giống runFavorQuest: quest khác đang active vẫn Accept quest đã chọn
 	tryAcceptQuestList(list)
 end
 
