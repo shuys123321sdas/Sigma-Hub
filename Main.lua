@@ -239,7 +239,7 @@ RAYLEIGH = {
 
 SAM = {
 	ON = false,
-	PITY_STOP = 99,
+	PITY_STOP = 100,
 	QUEST = "Help Sam",
 	CLAIM_WAIT = 0.2,
 	COMPASS_POS = Vector3.new(-1272, 221, -1368),
