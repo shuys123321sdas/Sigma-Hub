@@ -15,6 +15,7 @@ UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
 VirtualInputManager = game:GetService("VirtualInputManager")
+TeleportService = game:GetService("TeleportService")
 player = Players.LocalPlayer
 
 UNC = {
@@ -77,6 +78,7 @@ STATE = {
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
 	collectSweep = nil, spawnAt = 0,
+	hakiFastRunning = false,
 }
 
 QUEST = {
@@ -116,6 +118,33 @@ QUEST = {
 	TP_OFFSET = 2,
 	_deliverAt = {},
 	_actionAt = {},
+}
+
+HAKI = {
+	AUTO_KEN = false,
+	AUTO_BUSO = false,
+	FAST = false,
+	FULL_RATIO = 0.995,
+	EMPTY_RATIO = 0.03,
+	FAST_CD = 10,
+	STOP_LEVEL = 1000,
+	MIN_MOB_LEVEL = 150,
+	CLUSTER_RADIUS = 90,
+	TP_INTERVAL = 0.25,
+	SKILL_RETRY = 1.2,
+}
+
+RAYLEIGH = {
+	ON = false,
+	SP4 = "Strange Powers #4",
+	SP4_HAKI = 100,
+	REQ = { Melee = 500, Sniper = 250, Sword = 250, Defense = 250 },
+	CHESTS = "Chests",
+	RINGS = "MapFolder.Rings",
+	MEDITATE = "Meditate",
+	CHEST_WAIT = 0.3,
+	lastDbgAt = 0,
+	_meditateTrack = nil,
 }
 
 BEGGAR = {
@@ -2405,6 +2434,17 @@ function syncCfg()
 	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
 	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
 	HUB.ANTI_AFK = cfg.AntiAfk ~= false
+	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
+	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
+	HAKI.FAST = cfg.FastHaki == true
+	RAYLEIGH.ON = cfg.AutoRayleigh == true
+	if not HAKI.FAST then
+		STATE.hakiFastRunning = false
+		STATE.hakiHoldMob = nil
+	end
+	if not RAYLEIGH.ON then
+		RAYLEIGH._meditateTrack = nil
+	end
 	if not QUEST.EXPERTISE then
 		clearCollectSweep()
 	end
@@ -2463,6 +2503,493 @@ function setupGrappleCleaner()
 	getgenv().__SIGMA_GrappleConns = conns
 end
 
+function statLevel(name)
+	local d = getData()
+	local st = d and d.Stats and d.Stats[name]
+	return (type(st) == "table" and tonumber(st.Level)) or 0
+end
+
+function getBeri()
+	local d = getData()
+	return d and d.Stats and tonumber(d.Stats.Beri) or 0
+end
+
+function hasDance(name)
+	local d = getData()
+	return d and type(d.Dances) == "table" and d.Dances[name] == true
+end
+
+function mobLevelFromName(name)
+	local s = tostring(name or "")
+	local lv = string.match(s, "[Ll][Vv][^%d]*(%d+)")
+	if not lv then lv = string.match(s, "%[(%d+)%]") end
+	if not lv then lv = string.match(s, "%s(%d+)%s*$") end
+	return tonumber(lv)
+end
+
+function getSpecialWeapons()
+	local d = getData()
+	if not d or not d.Weapons then return nil end
+	local tbl = d.Weapons.Special or d.Weapons.special
+	if type(tbl) == "table" then return tbl end
+	for key, val in pairs(d.Weapons) do
+		if type(val) == "table" and string.lower(tostring(key)) == "special" then
+			return val
+		end
+	end
+	return nil
+end
+
+function specialSkillUnlocked(skillName)
+	local special = getSpecialWeapons()
+	if not special then return false end
+	local want = string.lower(tostring(skillName or ""))
+	for key, val in pairs(special) do
+		if val == true then
+			local low = string.lower(tostring(key))
+			if low == want then return true end
+			if want == "observation" and (string.find(low, "observ", 1, true) or string.find(low, "ken", 1, true)) then
+				return true
+			end
+			if want == "haki" and (string.find(low, "haki", 1, true) or string.find(low, "buso", 1, true) or string.find(low, "armament", 1, true)) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function hakiAbilityUnlocked(skillName)
+	local d = getData()
+	if not d then return false end
+	local abilities = d.Abilities
+	local ab = abilities and (abilities[skillName] or abilities[string.lower(tostring(skillName))])
+	if type(ab) == "table" then
+		if ab.Unlocked == true then return true end
+		if tonumber(ab.Level) and tonumber(ab.Level) > 0 then return true end
+	end
+	if skillName == "Haki" and statLevel("Haki") > 0 then return true end
+	if specialSkillUnlocked(skillName) then return true end
+	local kb = d.Keybinds
+	if kb and kb[skillName] then return true end
+	if skillName == "Observation" and kb then
+		if kb.Ken or kb.Kenbun or kb.Kenbunshoku then return true end
+	end
+	if skillName == "Haki" and kb then
+		if kb.Buso or kb.Armament or kb.Busoshoku then return true end
+	end
+	local char = player.Character
+	if skillName == "Observation" and char and char:GetAttribute("Observation") ~= nil then return true end
+	if skillName == "Haki" and char and char:GetAttribute("Haki") ~= nil then return true end
+	return false
+end
+
+function normalizeSkillKeybind(raw)
+	local key = tostring(raw or "")
+	if key == "" or key == "Unknown" or key == "None" or key == "-" then return nil end
+	local alias = {
+		["Left Control"] = "LeftControl",
+		["Left Alt"] = "LeftAlt",
+		["Left Shift"] = "LeftShift",
+		["Right Shift"] = "RightShift",
+	}
+	if alias[key] then return alias[key] end
+	if #key == 1 then return string.upper(key) end
+	key = key:gsub("%s+", "")
+	if #key == 1 then return string.upper(key) end
+	return key
+end
+
+function getHakiActionKey(skillName)
+	local d = getData()
+	local kb = d and d.Keybinds
+	local raw = kb and kb[skillName]
+	if not raw and skillName == "Observation" and kb then
+		raw = kb.Ken or kb.Kenbun or kb.Kenbunshoku
+	end
+	if not raw and skillName == "Haki" and kb then
+		raw = kb.Buso or kb.Armament or kb.Busoshoku
+	end
+	local key = normalizeSkillKeybind(raw)
+	if not key then
+		if skillName == "Observation" then key = "E" end
+		if skillName == "Haki" then key = "Q" end
+	end
+	return key
+end
+
+function actionToKeyCode(action)
+	local a = tostring(action or "")
+	if a == "" or a == "MouseLeftButton" or a == "MouseRightButton" or a == "Touch" then return nil end
+	local ok, kc = pcall(function() return Enum.KeyCode[a] end)
+	if ok and kc and kc ~= Enum.KeyCode.Unknown then return kc end
+	return nil
+end
+
+function pressKeyAction(action, hold)
+	if not UNC.vim then return false end
+	local kc = actionToKeyCode(action)
+	if not kc then return false end
+	return pcall(function()
+		VirtualInputManager:SendKeyEvent(true, kc, false, game)
+		task.wait(hold or 0.03)
+		VirtualInputManager:SendKeyEvent(false, kc, false, game)
+	end)
+end
+
+function pressHakiSkill(skillName)
+	local key = getHakiActionKey(skillName)
+	if key and pressKeyAction(key, 0.03) then return true end
+	local ctx = {}
+	local hrp = getHRP()
+	if hrp then
+		local cf = hrp.CFrame
+		ctx = { RayCFrame = cf, CameraCFrame = cf, MouseCFrame = cf, RayCFrameIA = cf }
+	end
+	if key then
+		return exec("SkillCaller", { key, ctx, nil, "Start" })
+			or exec("SkillCaller", { key, ctx, nil, "End" })
+	end
+	return exec("SkillCaller", { skillName, ctx, nil, "Start" })
+end
+
+function readHakiBar()
+	local cap = math.max(1, statLevel("Haki") + 50)
+	local amountAttr = tonumber(player:GetAttribute("HakiAmount"))
+	if amountAttr == nil then
+		local char = player.Character
+		amountAttr = tonumber(char and char:GetAttribute("HakiAmount"))
+	end
+	if amountAttr ~= nil then
+		local r = math.clamp(amountAttr / cap, 0, 1)
+		return r, amountAttr, cap
+	end
+	local pg = player:FindFirstChild("PlayerGui")
+	local hb = pg and pg:FindFirstChild("HealthBar")
+	local frame = hb and hb:FindFirstChild("Frame")
+	local haki = frame and frame:FindFirstChild("Haki")
+	local fill = haki and haki:FindFirstChild("Frame")
+	if fill and fill:IsA("Frame") then
+		local r = math.clamp(tonumber(fill.Size.X.Scale) or 0, 0, 1)
+		return r, math.floor(r * cap + 0.5), cap
+	end
+	return nil, nil, cap
+end
+
+function isCaveDemonForHaki(mob)
+	local n = normMob(mob.Name)
+	if not (string.find(n, "cave", 1, true) and string.find(n, "demon", 1, true)) then return false end
+	local lv = mobLevelFromName(mob.Name)
+	if lv and lv < HAKI.MIN_MOB_LEVEL then return false end
+	return true
+end
+
+function findCaveDemonClusterTarget()
+	local hrp = getHRP()
+	local candidates = {}
+	for _, mob in ipairs(getAliveEnemies()) do
+		if isCaveDemonForHaki(mob) then
+			local pos = getPos(mob)
+			if pos then table.insert(candidates, { mob = mob, pos = pos }) end
+		end
+	end
+	if #candidates < 1 then return nil end
+	local best, bestCrowd, bestDist = nil, -1, math.huge
+	for i, a in ipairs(candidates) do
+		local crowd = 0
+		for j, b in ipairs(candidates) do
+			if i ~= j and (a.pos - b.pos).Magnitude <= HAKI.CLUSTER_RADIUS then crowd += 1 end
+		end
+		local d = hrp and (hrp.Position - a.pos).Magnitude or 0
+		if crowd > bestCrowd or (crowd == bestCrowd and d < bestDist) then
+			best, bestCrowd, bestDist = a.mob, crowd, d
+		end
+	end
+	return best
+end
+
+function tpUnderMob(mob)
+	local hrp = getHRP()
+	local mobRoot = mob and (mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true))
+	if not hrp or not mobRoot then return false end
+	pcall(function() hrp.CFrame = CFrame.new(mobRoot.Position + Vector3.new(0, -2, 0)) end)
+	zeroHRPVel(hrp)
+	return true
+end
+
+function hakiGoToFarmSpot(forceTp)
+	local now = os.clock()
+	if not forceTp and (now - (STATE.hakiLastTp or 0)) < HAKI.TP_INTERVAL then return end
+	local target = STATE.hakiHoldMob
+	local hum = target and target:FindFirstChildOfClass("Humanoid")
+	if not target or not hum or hum.Health <= 0 then
+		target = findCaveDemonClusterTarget()
+		STATE.hakiHoldMob = target
+	end
+	if target then tpUnderMob(target) end
+	STATE.hakiLastTp = now
+end
+
+function tryHakiRejoin()
+	local now = os.clock()
+	if STATE.hakiFastPending then return true end
+	if (now - (STATE.hakiLastRejoin or 0)) < HAKI.FAST_CD then return true end
+	STATE.hakiFastPending = true
+	STATE.hakiLastRejoin = now
+	STATE.hakiFastRunning = false
+	STATE.hakiHoldMob = nil
+	pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
+	return true
+end
+
+function stepAutoKenbunshoku()
+	if not HAKI.AUTO_KEN or not isActive() then return end
+	if not hakiAbilityUnlocked("Observation") then return end
+	local char = player.Character
+	if not char then return end
+	if char:GetAttribute("Observation") == true then return end
+	local now = os.clock()
+	if now - (STATE.hakiLastKen or 0) < HAKI.SKILL_RETRY then return end
+	STATE.hakiLastKen = now
+	pressHakiSkill("Observation")
+end
+
+function stepAutoBusoshoku()
+	if not HAKI.AUTO_BUSO or not isActive() then return end
+	if not hakiAbilityUnlocked("Haki") then return end
+	local char = player.Character
+	if not char then return end
+	if char:GetAttribute("Haki") == true then return end
+	local now = os.clock()
+	if now - (STATE.hakiLastBuso or 0) < HAKI.SKILL_RETRY then return end
+	STATE.hakiLastBuso = now
+	pressHakiSkill("Haki")
+end
+
+function stepFastHaki()
+	if not HAKI.FAST or not isActive() then
+		STATE.hakiFastRunning = false
+		return false
+	end
+	if statLevel("Haki") >= HAKI.STOP_LEVEL then return false end
+	if not hakiAbilityUnlocked("Haki") then return false end
+	local ratio = select(1, readHakiBar())
+	if ratio == nil then return false end
+	if ratio >= HAKI.FULL_RATIO then
+		STATE.hakiFastRunning = true
+		hakiGoToFarmSpot(true)
+		return true
+	end
+	if STATE.hakiFastRunning and ratio <= HAKI.EMPTY_RATIO then
+		return tryHakiRejoin()
+	end
+	hakiGoToFarmSpot(true)
+	return true
+end
+
+function questObjectiveByKeyword(q, keyword)
+	if not (q and type(q.Objectives) == "table") then return nil, nil end
+	local kw = string.lower(tostring(keyword or ""))
+	for name, obj in pairs(q.Objectives) do
+		if string.find(string.lower(tostring(name)), kw, 1, true) then
+			return name, obj
+		end
+	end
+	return nil, nil
+end
+
+function rayleighReqMet()
+	for stat, lvl in pairs(RAYLEIGH.REQ) do
+		if statLevel(stat) < lvl then return false end
+	end
+	return true
+end
+
+function findMeditateAnimId()
+	local pg = player:FindFirstChild("PlayerGui")
+	local menu = pg and pg:FindFirstChild("Menu")
+	local emotes = menu and menu:FindFirstChild("Emotes")
+	local frame = emotes and emotes:FindFirstChild("Frame")
+	if not frame then return nil end
+	for _, b in ipairs(frame:GetDescendants()) do
+		if (b:IsA("TextButton") or b:IsA("ImageButton")) and b.Name == RAYLEIGH.MEDITATE then
+			local a = b:FindFirstChild("Animation")
+			if a and a.Value and a.Value ~= "" then return a.Value end
+		end
+	end
+	return nil
+end
+
+function playMeditate()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return false end
+	if RAYLEIGH._meditateTrack then
+		local okp = pcall(function() return RAYLEIGH._meditateTrack.IsPlaying end)
+		if okp and RAYLEIGH._meditateTrack.IsPlaying then return true end
+	end
+	local animId = findMeditateAnimId()
+	if not animId then return false end
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animId
+	local ok, track = pcall(function() return hum:LoadAnimation(anim) end)
+	if ok and track then
+		pcall(function() track.Looped = true; track:Play() end)
+		RAYLEIGH._meditateTrack = track
+		return true
+	end
+	return false
+end
+
+function rayClaim(qname)
+	local model = findNPC("Rayleigh")
+	if model then remoteQuestClaim(model, qname) end
+end
+
+function getWaterTPPos()
+	local w = workspace:FindFirstChild("Water")
+	if not w then return nil end
+	if w:IsA("BasePart") then return w.Position + Vector3.new(0, -6, 0) end
+	local part = w:IsA("Model") and (w.PrimaryPart or w:FindFirstChildWhichIsA("BasePart", true))
+		or w:FindFirstChildWhichIsA("BasePart", true)
+	if part then return part.Position + Vector3.new(0, -6, 0) end
+	return nil
+end
+
+function stepSP4Phase(q)
+	if not RAYLEIGH.ON or not q or q.Active ~= RAYLEIGH.SP4 then return false end
+	if q.Completed == true then
+		rayClaim(RAYLEIGH.SP4)
+		return true
+	end
+	local _, dealObj = questObjectiveByKeyword(q, "deal")
+	local _, takeObj = questObjectiveByKeyword(q, "take")
+	local _, _, dealDone = objectiveProgress(dealObj)
+	local _, _, takeDone = objectiveProgress(takeObj)
+	if dealDone and takeDone then
+		rayClaim(RAYLEIGH.SP4)
+		return true
+	end
+	if dealDone and not takeDone then
+		local pos = getWaterTPPos()
+		local hrp = getHRP()
+		if pos and hrp then
+			pcall(function() hrp.CFrame = CFrame.new(pos) end)
+			zeroHRPVel(hrp)
+		end
+		return true
+	end
+	return false
+end
+
+function stepRayleighSP4Farm()
+	local q = getQuests()
+	if not q or q.Active ~= RAYLEIGH.SP4 or q.Completed == true then return false end
+	if stepSP4Phase(q) then return true end
+	local mob
+	for _, m in ipairs(getAliveEnemies()) do
+		local hum = m:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Health > 0 then
+			mob = m
+			break
+		end
+	end
+	if mob then attackBurstOnMob(mob, "pick") end
+	return true
+end
+
+function rayleighAccept(qn)
+	local model = findNPC("Rayleigh")
+	if not model then return false end
+	return remoteQuestAccept(model, qn)
+end
+
+function stepRayleigh()
+	if not RAYLEIGH.ON or not isActive() then return false end
+	if not rayleighReqMet() then return false end
+	local q = getQuests()
+	if not q then return false end
+	local active = q.Active
+
+	if active == "Strange Powers #1" then
+		if q.Completed then rayClaim("Strange Powers #1"); return true end
+		if hasItem("Old Book") then
+			local model = findNPC("Rayleigh")
+			if model then remoteQuestDeliver(model, "Old Book", active) end
+		else
+			local folder = resolvePath(RAYLEIGH.CHESTS)
+			if folder then
+				for _, spawner in ipairs(folder:GetChildren()) do
+					if not isActive() or hasItem("Old Book") then break end
+					local chest = spawner:FindFirstChild("TreasureChest")
+					local pos = chest and getPos(chest)
+					local hrp = getHRP()
+					if pos and hrp then
+						pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end)
+						task.wait(RAYLEIGH.CHEST_WAIT)
+					end
+				end
+			end
+		end
+		return true
+	end
+
+	if active == "Strange Powers #2" then
+		if q.Completed then rayClaim("Strange Powers #2"); return true end
+		if not hasDance(RAYLEIGH.MEDITATE) then
+			if getBeri() >= 1000000 then
+				local model = findNPC("Dancer")
+				if model then clickNPC(model); exec("DancerBuy", { "BuyDance", model, RAYLEIGH.MEDITATE }) end
+			end
+			return true
+		end
+		playMeditate()
+		return true
+	end
+
+	if active == "Strange Powers #3" then
+		if q.Completed then rayClaim("Strange Powers #3"); return true end
+		local folder = resolvePath(RAYLEIGH.RINGS)
+		if folder then
+			for _, ring in ipairs(folder:GetChildren()) do
+				if not isActive() then break end
+				q = getQuests() or q
+				if q.Completed then break end
+				local pos = getPos(ring)
+				local hrp = getHRP()
+				if pos and hrp then
+					pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end)
+					task.wait(0.35)
+				end
+			end
+		end
+		return true
+	end
+
+	if active == RAYLEIGH.SP4 then
+		return stepRayleighSP4Farm()
+	end
+
+	local cd1 = questCooldownRemaining("Strange Powers #1")
+	local cd2 = questCooldownRemaining("Strange Powers #2")
+	local cd3 = questCooldownRemaining("Strange Powers #3")
+	local cd4 = questCooldownRemaining(RAYLEIGH.SP4)
+	if cd1 <= 0 then return rayleighAccept("Strange Powers #1") end
+	if cd1 > 0 and cd2 <= 0 then return rayleighAccept("Strange Powers #2") end
+	if cd2 > 0 and cd3 <= 0 then return rayleighAccept("Strange Powers #3") end
+	if cd3 > 0 and cd4 <= 0 and statLevel("Haki") >= RAYLEIGH.SP4_HAKI then
+		return rayleighAccept(RAYLEIGH.SP4)
+	end
+	return false
+end
+
+function stepHakiFeatures()
+	stepAutoKenbunshoku()
+	stepAutoBusoshoku()
+	if RAYLEIGH.ON and stepRayleigh() then return end
+	stepFastHaki()
+end
+
 function serviceTick()
 	if HUB.AUTO_SPAWN then
 		if ensureSpawn() then return end
@@ -2473,6 +3000,7 @@ end
 function featureTick()
 	if not hubRunning() then return end
 	if spawnOpen() or not worldReady() then return end
+	stepHakiFeatures()
 	if questExpertiseEnabled() then
 		stepExpertiseQuest()
 	else
@@ -2503,6 +3031,11 @@ function startHubLoop()
 	getgenv().__SIGMA_FISH_RUN_ID = run
 	setupAntiAfk()
 	setupGrappleCleaner()
+	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
+		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function()
+			STATE.hakiFastPending = false
+		end)
+	end
 	task.spawn(function()
 		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
 			pcall(hubTick)
@@ -2601,6 +3134,43 @@ function SigmaFish.setAntiAfk(on)
 	refreshHubServices()
 end
 
+function SigmaFish.setAutoKenbunshoku(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoKenbunshoku = on == true
+	getgenv().SigmaFishConfig = cfg
+	HAKI.AUTO_KEN = cfg.AutoKenbunshoku
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoBusoshoku(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoBusoshoku = on == true
+	getgenv().SigmaFishConfig = cfg
+	HAKI.AUTO_BUSO = cfg.AutoBusoshoku
+	ensureLoopRunning()
+end
+
+function SigmaFish.setFastHaki(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.FastHaki = on == true
+	getgenv().SigmaFishConfig = cfg
+	HAKI.FAST = cfg.FastHaki
+	if not HAKI.FAST then
+		STATE.hakiFastRunning = false
+		STATE.hakiHoldMob = nil
+	end
+	ensureLoopRunning()
+end
+
+function SigmaFish.setAutoRayleigh(on)
+	local cfg = getgenv().SigmaFishConfig or {}
+	cfg.AutoRayleigh = on == true
+	getgenv().SigmaFishConfig = cfg
+	RAYLEIGH.ON = cfg.AutoRayleigh
+	if not RAYLEIGH.ON then RAYLEIGH._meditateTrack = nil end
+	ensureLoopRunning()
+end
+
 function SigmaFish.applyConfig()
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
@@ -2616,6 +3186,22 @@ function SigmaFish.applyConfig()
 	if wantExp ~= QUEST.EXPERTISE then
 		SigmaFish.setAutoExpertise(wantExp)
 	end
+	local wantKen = cfg.AutoKenbunshoku == true
+	local wantBuso = cfg.AutoBusoshoku == true
+	local wantFast = cfg.FastHaki == true
+	local wantRay = cfg.AutoRayleigh == true
+	if wantKen ~= HAKI.AUTO_KEN and SigmaFish.setAutoKenbunshoku then
+		SigmaFish.setAutoKenbunshoku(wantKen)
+	elseif wantKen then HAKI.AUTO_KEN = true end
+	if wantBuso ~= HAKI.AUTO_BUSO and SigmaFish.setAutoBusoshoku then
+		SigmaFish.setAutoBusoshoku(wantBuso)
+	elseif wantBuso then HAKI.AUTO_BUSO = true end
+	if wantFast ~= HAKI.FAST and SigmaFish.setFastHaki then
+		SigmaFish.setFastHaki(wantFast)
+	elseif wantFast then HAKI.FAST = true end
+	if wantRay ~= RAYLEIGH.ON and SigmaFish.setAutoRayleigh then
+		SigmaFish.setAutoRayleigh(wantRay)
+	elseif wantRay then RAYLEIGH.ON = true end
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
@@ -2673,6 +3259,14 @@ function SigmaFish.stop()
 	getgenv().SigmaFishConfig.AutoFish = false
 	getgenv().SigmaFishConfig.AutoQuest = false
 	getgenv().SigmaFishConfig.AutoExpertise = false
+	getgenv().SigmaFishConfig.AutoKenbunshoku = false
+	getgenv().SigmaFishConfig.AutoBusoshoku = false
+	getgenv().SigmaFishConfig.FastHaki = false
+	getgenv().SigmaFishConfig.AutoRayleigh = false
+	HAKI.AUTO_KEN = false
+	HAKI.AUTO_BUSO = false
+	HAKI.FAST = false
+	RAYLEIGH.ON = false
 	STATE.cooking = false
 	STATE.pause = false
 	syncCfg()
@@ -2698,6 +3292,10 @@ do
 	if cfg.AutoQuest == nil then cfg.AutoQuest = false end
 	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
 	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
+	if cfg.AutoKenbunshoku == nil then cfg.AutoKenbunshoku = false end
+	if cfg.AutoBusoshoku == nil then cfg.AutoBusoshoku = false end
+	if cfg.FastHaki == nil then cfg.FastHaki = false end
+	if cfg.AutoRayleigh == nil then cfg.AutoRayleigh = false end
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	syncCfg()
