@@ -9,16 +9,35 @@ getgenv().SigmaConfig = CFG
 
 Players = game:GetService("Players")
 ReplicatedFirst = game:GetService("ReplicatedFirst")
+UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
 VirtualInputManager = game:GetService("VirtualInputManager")
 player = Players.LocalPlayer
 
+UNC = {
+	mobile = false,
+	vim = VirtualInputManager ~= nil,
+	fireSignal = type(firesignal) == "function",
+	getConns = type(getconnections) == "function",
+}
+do
+	local uis = UserInputService
+	if uis.KeyboardEnabled and uis.MouseEnabled then
+		UNC.mobile = false
+	elseif uis.TouchEnabled and not uis.KeyboardEnabled and not uis.MouseEnabled then
+		UNC.mobile = true
+	elseif uis.PreferredInput == Enum.PreferredInput.Touch and not uis.MouseEnabled then
+		UNC.mobile = true
+	end
+end
+
 RUN = { id = 0 }
 FISH = {
-	ON = false, SUPER = false, AUTO_SELL = true,
+	ON = false, AUTO_SELL = true,
 	SELL_AT = 40, LOOP_DELAY = 0.25,
 	CAST_TIMEOUT = 4, BITE_TIMEOUT = 30, REEL_TIMEOUT = 4,
+	MINI_CLICK = 0.2, MINI_SHUFFLE = 0.15, MINI_READY = 0.35, MINI_POLL = 0.06,
 	COOK_PATH = "MapFolder.Island8.Kitchen.Cooking.CookingStation",
 	FISHERMAN = "Fisherman", COOKER = "Cooker", ROD_CAT = "Utility",
 	RODS = { "Super Rod", "Sturdy Rod", "Wood Rod" },
@@ -29,9 +48,25 @@ FISH = {
 		"Large Flooper", "Large Busser", "Large Jawber", "Large Lubber",
 	},
 }
+if UNC.mobile then
+	FISH.MINI_CLICK = 0.24
+	FISH.MINI_SHUFFLE = 0.18
+	FISH.MINI_POLL = 0.09
+end
 STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
+	lastSolveAt = 0, miniTotal = nil,
+}
+
+QUEST = {
+	ON = false,
+	SEL = "Fisherman's Challenge",
+	LIST = {
+		"Fisherman's Favor",
+		"Fisherman's Task",
+		"Fisherman's Challenge",
+	},
 }
 
 function isActive()
@@ -255,8 +290,17 @@ function scanFish()
 	return out
 end
 
-function superMode()
-	return FISH.SUPER and not qHist(FISH.Q_CHALLENGE)
+function questActive(name)
+	local q = getQuests()
+	return q and q.Active == name
+end
+
+function keepForQuest(name)
+	if not QUEST.ON or QUEST.SEL ~= FISH.Q_TASK or qHist(FISH.Q_TASK) then return false end
+	if not name then return false end
+	if objNeed(name) then return true end
+	local low = string.lower(name)
+	return string.find(low, "medium", 1, true) or string.find(low, "large", 1, true)
 end
 
 function objNeed(fishName)
@@ -267,23 +311,6 @@ function objNeed(fishName)
 	local p = type(obj) == "table" and tonumber(obj.Progress) or 0
 	local r = type(obj) == "table" and tonumber(obj.Requirement or obj.Goal) or 1
 	return p < r
-end
-
-function keepQuestFish()
-	return superMode() and not qHist(FISH.Q_TASK)
-end
-
-function keepFish(name)
-	if not keepQuestFish() or not name then return false end
-	if objNeed(name) then return true end
-	local low = string.lower(name)
-	return string.find(low, "medium", 1, true) or string.find(low, "large", 1, true)
-end
-
-function countSellable()
-	local n = 0
-	for _, t in ipairs(scanFish()) do if not keepFish(t.Name) then n += 1 end end
-	return n
 end
 
 function hasItem(name)
@@ -343,76 +370,333 @@ function waitUntil(cond, timeout)
 	return cond()
 end
 
-function btnBright(btn)
-	if not btn or not btn:IsA("GuiObject") or (btn.BackgroundTransparency or 0) > 0.5 then return 0 end
+function btnBgSum(btn)
+	if not btn or not btn:IsA("GuiObject") then return 0 end
+	if (btn.BackgroundTransparency or 0) > 0.5 then return 0 end
 	local c = btn.BackgroundColor3
 	return c.R + c.G + c.B
 end
 
-function miniButtons(gui)
-	local out = {}
+function surfaceBright(btn)
+	if not btn then return 0 end
+	local best = 0
+	local function scan(inst, depth)
+		if depth > 5 or not inst then return end
+		if inst:IsA("GuiObject") and inst.BackgroundTransparency < 0.88 then
+			local c = inst.BackgroundColor3
+			best = math.max(best, c.R + c.G + c.B)
+		end
+		if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			if inst.ImageTransparency < 0.88 then
+				local c = inst.ImageColor3
+				best = math.max(best, c.R + c.G + c.B)
+			end
+		end
+		for _, ch in ipairs(inst:GetChildren()) do scan(ch, depth + 1) end
+	end
+	scan(btn, 0)
+	return best
+end
+
+function miniGameButtons(gui)
+	local bestRow, bestCount = nil, 0
 	for _, d in ipairs(gui:GetDescendants()) do
-		if d:IsA("TextButton") and d:FindFirstChild("TextLabel") and d.Visible then
-			local s = math.min(d.AbsoluteSize.X, d.AbsoluteSize.Y)
-			if s > 40 then table.insert(out, d) end
+		if d:IsA("Frame") then
+			local btns = {}
+			for _, ch in ipairs(d:GetChildren()) do
+				if ch:IsA("TextButton") and ch:FindFirstChild("TextLabel") then
+					table.insert(btns, ch)
+				end
+			end
+			if #btns > bestCount then bestRow, bestCount = btns, #btns end
 		end
 	end
-	return out
+	if bestRow and bestCount >= 3 then return bestRow end
+	local all = {}
+	for _, d in ipairs(gui:GetDescendants()) do
+		if d:IsA("TextButton") and d:FindFirstChild("TextLabel") then table.insert(all, d) end
+	end
+	return all
+end
+
+function readMiniCount(gui)
+	local bestA, bestB
+	for _, d in ipairs(gui:GetDescendants()) do
+		if d:IsA("TextLabel") then
+			local a, b = string.match(d.Text or "", "^%s*(%d+)%s*/%s*(%d+)%s*$")
+			if a and b then
+				a, b = tonumber(a), tonumber(b)
+				if not bestA or a > bestA then bestA, bestB = a, b end
+			end
+		end
+	end
+	return bestA, bestB
+end
+
+function isHighlightBtn(btn)
+	if not btn or not btn:IsA("GuiButton") or not btn.Visible then return false end
+	local as = btn.AbsoluteSize
+	if as.X <= 2 or as.Y <= 2 then return false end
+	if math.min(as.X, as.Y) < 52 then return false end
+	local bg = btnBgSum(btn)
+	if bg >= 1.55 then return true end
+	local lum = surfaceBright(btn)
+	if lum >= 2.0 and bg >= 0.5 then return true end
+	if lum >= 1.45 and bg >= 1.0 then return true end
+	local stroke = btn:FindFirstChildOfClass("UIStroke")
+	if stroke and stroke.Thickness >= 1.8 then
+		local sc = stroke.Color.R + stroke.Color.G + stroke.Color.B
+		if sc >= 2.0 and bg >= 0.8 then return true end
+	end
+	return false
+end
+
+function pickHighlightBtn(gui)
+	local rows = {}
+	for _, btn in ipairs(miniGameButtons(gui)) do
+		if btn.Visible then
+			local as = btn.AbsoluteSize
+			local sz = math.min(as.X, as.Y)
+			if sz > 40 then
+				local stroke = btn:FindFirstChildOfClass("UIStroke")
+				table.insert(rows, {
+					btn = btn, size = sz, bg = btnBgSum(btn),
+					stroke = stroke and stroke.Thickness or 0,
+				})
+			end
+		end
+	end
+	if #rows < 3 then return nil, -999 end
+	table.sort(rows, function(a, b)
+		if math.abs(a.size - b.size) > 2 then return a.size > b.size end
+		return a.bg > b.bg
+	end)
+	local top, second = rows[1], rows[2]
+	if top.size - second.size >= 5 then return top.btn, 10 end
+	table.sort(rows, function(a, b) return a.bg > b.bg end)
+	top, second = rows[1], rows[2]
+	local delta = top.bg - second.bg
+	if top.bg >= 2.5 and delta >= 0.25 then return top.btn, 10 end
+	if top.bg >= 1.55 and delta >= 0.3 then return top.btn, 9 end
+	if top.stroke >= 1.8 and top.bg > second.bg + 0.2 then return top.btn, 8 end
+	return nil, -999
+end
+
+function relativeHighlightBtn(gui)
+	local rows = {}
+	for _, btn in ipairs(miniGameButtons(gui)) do
+		if btn.Visible then
+			local as = btn.AbsoluteSize
+			if as.X > 2 and as.Y > 2 then
+				local lum = surfaceBright(btn)
+				local bg = btn.BackgroundColor3
+				table.insert(rows, {
+					btn = btn, lum = lum,
+					bgSum = bg.R + bg.G + bg.B,
+					bt = btn.BackgroundTransparency or 0,
+				})
+			end
+		end
+	end
+	if #rows < 3 then return nil, -999 end
+	table.sort(rows, function(a, b) return a.lum > b.lum end)
+	local top, second = rows[1], rows[2]
+	local delta = top.lum - second.lum
+	if top.lum >= 2.5 and delta >= 0.3 then return top.btn, 10 end
+	if top.bgSum >= 2.4 and top.bt <= 0.2 and delta >= 0.25 then return top.btn, 10 end
+	if top.lum >= 1.5 and delta >= 0.4 then return top.btn, 8 end
+	if isHighlightBtn(top.btn) and delta >= 0.2 then return top.btn, 9 end
+	return nil, -999
+end
+
+function mobileHighlightBtn(gui)
+	local btns = miniGameButtons(gui)
+	local rows = {}
+	for _, btn in ipairs(btns) do
+		if isHighlightBtn(btn) then
+			local as = btn.AbsoluteSize
+			table.insert(rows, { btn = btn, size = math.min(as.X, as.Y), lum = surfaceBright(btn) })
+		end
+	end
+	if #rows == 0 then
+		for _, btn in ipairs(btns) do
+			local lum = surfaceBright(btn)
+			local as = btn.AbsoluteSize
+			table.insert(rows, { btn = btn, size = math.min(as.X, as.Y), lum = lum })
+		end
+		table.sort(rows, function(a, b)
+			if a.lum ~= b.lum then return a.lum > b.lum end
+			return a.size > b.size
+		end)
+		local top, second = rows[1], rows[2]
+		if top and top.lum >= 2.1 and (not second or top.lum - second.lum >= 0.35) then
+			return top.btn, 10
+		end
+		return nil, -999
+	end
+	if #rows > 1 then
+		table.sort(rows, function(a, b)
+			if a.lum ~= b.lum then return a.lum > b.lum end
+			return a.size > b.size
+		end)
+		if rows[1].size - rows[2].size < 3 and rows[1].lum - rows[2].lum < 0.3 then
+			return nil, -999
+		end
+	end
+	return rows[1].btn, 10
 end
 
 function pickMiniBtn(gui)
-	local rows = {}
-	for _, btn in ipairs(miniButtons(gui)) do
-		table.insert(rows, { btn = btn, b = btnBright(btn), s = math.min(btn.AbsoluteSize.X, btn.AbsoluteSize.Y) })
+	local btn, score = pickHighlightBtn(gui)
+	if btn then return btn, score end
+	btn, score = relativeHighlightBtn(gui)
+	if btn then return btn, score end
+	btn, score = mobileHighlightBtn(gui)
+	if btn then return btn, score end
+	return nil, -999
+end
+
+function tapGui(btn)
+	if not btn then return false end
+	local ap, as = btn.AbsolutePosition, btn.AbsoluteSize
+	if as.X <= 2 or as.Y <= 2 then return false end
+	local x, y = ap.X + as.X * 0.5, ap.Y + as.Y * 0.5
+	if not UNC.mobile then
+		local inset = GuiService:GetGuiInset()
+		x += inset.X y += inset.Y
 	end
-	if #rows < 3 then return nil end
-	table.sort(rows, function(a, b)
-		if math.abs(a.s - b.s) > 3 then return a.s > b.s end
-		return a.b > b.b
-	end)
-	if rows[1].b >= 1.5 or rows[1].s - rows[2].s >= 5 then return rows[1].btn end
-	if rows[1].b - rows[2].b >= 0.25 then return rows[1].btn end
-	return nil
+	if UNC.vim then
+		local ok = pcall(function()
+			VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+			task.wait(0.03)
+			VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+		end)
+		if ok then return true end
+	end
+	if btn:IsA("GuiButton") and pcall(function() btn:Activate() end) then return true end
+	return false
 end
 
 function clickGui(btn)
 	if not btn then return false end
 	if btn:IsA("GuiButton") and pcall(function() btn:Activate() end) then return true end
-	if firesignal and btn.MouseButton1Click then pcall(firesignal, btn.MouseButton1Click) end
-	if VirtualInputManager then
-		local ap, as = btn.AbsolutePosition, btn.AbsoluteSize
-		local x, y = ap.X + as.X * 0.5, ap.Y + as.Y * 0.5
-		local inset = GuiService:GetGuiInset()
-		x += inset.X y += inset.Y
-		pcall(function()
-			VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
-			task.wait(0.03)
-			VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
-		end)
+	if UNC.fireSignal then
+		if pcall(firesignal, btn.MouseButton1Click) then return true end
+		if btn:IsA("GuiButton") and pcall(firesignal, btn.Activated) then return true end
 	end
-	return true
+	if UNC.getConns then
+		local ok, fired = pcall(function()
+			local n = 0
+			for _, sig in ipairs({ btn.MouseButton1Click, btn.Activated }) do
+				if sig then
+					for _, c in ipairs(getconnections(sig)) do
+						if c.Fire then c:Fire() n += 1
+						elseif c.Function then c.Function() n += 1 end
+					end
+				end
+			end
+			return n > 0
+		end)
+		if ok and fired then return true end
+	end
+	return tapGui(btn)
+end
+
+function onMiniEvent(msg)
+	if msg == "FishingMinigame" then
+		solveMini()
+	elseif msg == "FishingReeled" then
+		STATE.inMini = false
+		STATE.solving = false
+		STATE.miniTotal = nil
+	end
 end
 
 function solveMini()
-	if STATE.solving or STATE.inMini then return end
-	STATE.solving, STATE.inMini = true, true
+	local now = os.clock()
+	local debounce = UNC.mobile and 0.35 or 0.2
+	if STATE.solving or (now - STATE.lastSolveAt) < debounce then return end
+	STATE.lastSolveAt = now
+	STATE.solving = true
+	STATE.inMini = true
+
+	local clickIv = UNC.mobile and 0.24 or FISH.MINI_CLICK
+	local shuffleWait = UNC.mobile and 0.18 or FISH.MINI_SHUFFLE
+	local pollIv = UNC.mobile and 0.09 or FISH.MINI_POLL
+
 	task.spawn(function()
-		local pg = player:WaitForChild("PlayerGui", 5)
+		local pg = player:FindFirstChild("PlayerGui") or player:WaitForChild("PlayerGui", 5)
+		local lastRemain, lastClickAt, lastShuffleAt = nil, 0, 0
+		local sawEnabled, sawCounter = false, false
+
 		while isActive() and FISH.ON do
 			local gui = pg and pg:FindFirstChild("FishingMinigame")
-			if not gui or not gui.Enabled then break end
-			local btn = pickMiniBtn(gui)
-			if btn then clickGui(btn) task.wait(0.2) else task.wait(0.08) end
+			if not gui or not gui.Enabled then
+				if sawEnabled then break end
+				task.wait(0.05)
+			else
+				local now2 = os.clock()
+				if not sawEnabled then
+					sawEnabled = true
+					lastShuffleAt = now2
+					local readyBy = now2 + FISH.MINI_READY
+					while isActive() and FISH.ON and gui.Enabled and os.clock() < readyBy do
+						local r = readMiniCount(gui)
+						if r and r > 0 then sawCounter = true break end
+						task.wait(0.05)
+					end
+					lastShuffleAt = os.clock()
+				end
+
+				local remain, total = readMiniCount(gui)
+				if total then STATE.miniTotal = total end
+				if remain and remain > 0 then sawCounter = true end
+
+				if remain == 0 then
+					if not sawCounter then
+						task.wait(0.08)
+					else
+						break
+					end
+				else
+					local btn, score = pickMiniBtn(gui)
+					local settled = (now2 - lastShuffleAt) >= shuffleWait
+					local canClick = (now2 - lastClickAt) >= clickIv
+					if btn and score >= 8 and settled and canClick then
+						if clickGui(btn) then
+							lastClickAt = now2
+							lastShuffleAt = now2
+							task.wait(shuffleWait)
+						end
+					end
+					if remain then lastRemain = remain end
+					task.wait(pollIv)
+				end
+			end
 		end
-		STATE.solving, STATE.inMini = false, false
+
+		STATE.inMini = false
+		STATE.solving = false
+		STATE.miniTotal = nil
 	end)
 end
 
 function hookListeners()
 	if STATE.listeners then return end
 	STATE.listeners = true
+
 	local function listen(r)
-		if r and r:IsA("RemoteEvent") and r.Name == "DataEvent" then
+		if not r then return end
+		local ok, isEv = pcall(function() return r:IsA("RemoteEvent") end)
+		if not ok or not isEv then
+			ok, isEv = pcall(function() return r:IsA("UnreliableRemoteEvent") end)
+		end
+		if not ok or not isEv then return end
+		if r.Name == "FishingEvent" then
+			pcall(function()
+				r.OnClientEvent:Connect(function(m) pcall(onMiniEvent, m) end)
+			end)
+		elseif r.Name == "DataEvent" then
 			pcall(function()
 				r.OnClientEvent:Connect(function(_, val, path)
 					if path == "Stats.Fish" and type(val) == "number" then STATE.fishCount = val end
@@ -420,20 +704,31 @@ function hookListeners()
 			end)
 		end
 	end
+
 	for _, d in ipairs(game:GetDescendants()) do listen(d) end
 	game.DescendantAdded:Connect(listen)
-	local pg = player:WaitForChild("PlayerGui", 10)
-	if pg then
-		local function hook(g)
-			if g.Name ~= "FishingMinigame" then return end
-			g:GetPropertyChangedSignal("Enabled"):Connect(function()
-				if g.Enabled then solveMini() end
+
+	task.spawn(function()
+		local pg = player:WaitForChild("PlayerGui", 10)
+		if not pg then return end
+		local function hook(gui)
+			if gui.Name ~= "FishingMinigame" then return end
+			pcall(function()
+				gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+					if gui.Enabled then solveMini() end
+				end)
 			end)
-			if g.Enabled then solveMini() end
+			if gui.Enabled then solveMini() end
 		end
 		for _, g in ipairs(pg:GetChildren()) do hook(g) end
 		pg.ChildAdded:Connect(hook)
-	end
+	end)
+end
+
+function miniOpen()
+	local pg = player:FindFirstChild("PlayerGui")
+	local g = pg and pg:FindFirstChild("FishingMinigame")
+	return g and g.Enabled
 end
 
 function deliverQuestFish()
@@ -464,12 +759,11 @@ function deliverPackage()
 	return questDone()
 end
 
-function stepFavor()
+function runFavorQuest()
 	if qHist(FISH.Q_FAVOR) then return false end
 	local q, fm = getQuests(), findNPC(FISH.FISHERMAN)
 	if not q or not fm then return false end
 	local active = q.Active
-
 	if active == FISH.Q_FAVOR and q.Completed then
 		questExec(fm, "Claim")
 		task.wait(0.3) equipRod("Wood Rod") return true
@@ -482,31 +776,42 @@ function stepFavor()
 	return false
 end
 
-function stepSuperQuest()
+function runTaskQuest()
+	if qHist(FISH.Q_TASK) then return false end
 	local q, fm = getQuests(), findNPC(FISH.FISHERMAN)
 	if not q or not fm then return false end
-	local active = q.Active
-
-	if active == FISH.Q_CHALLENGE then
-		if q.Completed then questExec(fm, "Claim") equipRod("Super Rod") return true end
-		return false
-	end
-	if active == FISH.Q_TASK then
+	if q.Active == FISH.Q_TASK then
 		if q.Completed then questExec(fm, "Claim") equipRod("Sturdy Rod") return true end
 		if os.clock() - STATE.lastDeliver >= 3 then deliverQuestFish() end
 		return false
 	end
-	if qHist(FISH.Q_FAVOR) and not qHist(FISH.Q_TASK) and active ~= FISH.Q_FAVOR and active ~= FISH.Q_TASK then
-		questExec(fm, "Accept", FISH.Q_TASK) return true
+	questExec(fm, "Accept", FISH.Q_TASK)
+	return true
+end
+
+function runChallengeQuest()
+	if qHist(FISH.Q_CHALLENGE) then return false end
+	local q, fm = getQuests(), findNPC(FISH.FISHERMAN)
+	if not q or not fm then return false end
+	if not qHist(FISH.Q_TASK) then return false end
+	if q.Active == FISH.Q_CHALLENGE then
+		if q.Completed then questExec(fm, "Claim") equipRod("Super Rod") return true end
+		return false
 	end
-	if qHist(FISH.Q_TASK) and not qHist(FISH.Q_CHALLENGE) and active ~= FISH.Q_CHALLENGE and active ~= FISH.Q_TASK then
-		questExec(fm, "Accept", FISH.Q_CHALLENGE) return true
+	questExec(fm, "Accept", FISH.Q_CHALLENGE)
+	return true
+end
+
+function questStep()
+	if not QUEST.ON or not QUEST.SEL then return end
+	if QUEST.SEL == FISH.Q_FAVOR then runFavorQuest()
+	elseif QUEST.SEL == FISH.Q_TASK then runTaskQuest()
+	elseif QUEST.SEL == FISH.Q_CHALLENGE then runChallengeQuest()
 	end
-	return false
 end
 
 function stashQuestFish()
-	if not keepQuestFish() then return {} end
+	if not QUEST.ON or QUEST.SEL ~= FISH.Q_TASK or qHist(FISH.Q_TASK) then return {} end
 	local keep = workspace:FindFirstChild("SigmaFishKeep_" .. player.UserId)
 	if not keep then
 		keep = Instance.new("Folder")
@@ -515,7 +820,7 @@ function stashQuestFish()
 	end
 	local out = {}
 	for _, t in ipairs(scanFish()) do
-		if keepFish(t.Name) then pcall(function() t.Parent = keep end) table.insert(out, t) end
+		if keepForQuest(t.Name) then pcall(function() t.Parent = keep end) table.insert(out, t) end
 	end
 	return out
 end
@@ -526,6 +831,53 @@ function restoreFish(stashed)
 	for _, t in ipairs(stashed) do if t and t.Parent then pcall(function() t.Parent = bp end) end end
 end
 
+function merchantExec(model, channel, args)
+	if not model then return false end
+	setMerchant(model)
+	task.wait(0.05)
+	return exec(channel, args or {})
+end
+
+function fireRemoteClick(cd)
+	if not cd then return false end
+	if fireclickdetector then
+		for _ = 1, 3 do
+			pcall(fireclickdetector, cd)
+			task.wait(0.1)
+		end
+		return true
+	end
+	if UNC.getConns then
+		local ok = pcall(function()
+			for _, sig in ipairs({ cd.MouseClick, cd.MouseButton1Click }) do
+				if sig then
+					for _, c in ipairs(getconnections(sig)) do
+						if c.Function then c.Function()
+						elseif c.Fire then c:Fire() end
+					end
+				end
+			end
+		end)
+		if ok then return true end
+	end
+	return false
+end
+
+function remoteCook()
+	local station = resolvePath(FISH.COOK_PATH)
+	if not station then return false end
+	local cd = (station:IsA("ClickDetector") and station)
+		or station:FindFirstChildOfClass("ClickDetector")
+		or station:FindFirstChildWhichIsA("ClickDetector", true)
+	if cd then return fireRemoteClick(cd) end
+	return exec("CookFish", {}) or exec("CookAll", {})
+end
+
+function remoteSell()
+	local cooker = findNPC(FISH.COOKER)
+	if not cooker then return false end
+	return merchantExec(cooker, "SellFish", {})
+end
 function cookAndSell(force)
 	if not force then
 		if not FISH.AUTO_SELL then return false end
@@ -540,16 +892,9 @@ function cookAndSell(force)
 	if hum then pcall(function() hum:UnequipTools() end) end
 	task.wait(0.1)
 
-	local station = resolvePath(FISH.COOK_PATH)
-	if station then
-		tpNear(station)
-		local cd = station:FindFirstChildOfClass("ClickDetector") or station:FindFirstChildWhichIsA("ClickDetector", true)
-		if cd and fireclickdetector then for _ = 1, 3 do pcall(fireclickdetector, cd) task.wait(0.12) end end
-	end
-	task.wait(0.3)
-
-	local cooker = findNPC(FISH.COOKER)
-	if cooker then clickNPC(cooker) exec("SellFish", {}) end
+	remoteCook()
+	task.wait(0.35)
+	remoteSell()
 
 	STATE.lastSell = os.clock()
 	restoreFish(stashed)
@@ -563,21 +908,24 @@ function castLoop()
 	STATE.loopRunning = true
 	task.spawn(function()
 		while isActive() and FISH.ON do
-			if STATE.pause or STATE.inMini then
+			if STATE.pause then
+				task.wait(0.12)
+			elseif miniOpen() then
+				if not STATE.solving then solveMini() end
 				task.wait(0.12)
 			elseif not findRod() then
 				task.wait(1)
 			else
 				local rod = equipBestRod()
-				if rod and not lineOut() and not STATE.inMini then
+				if rod and not lineOut() and not miniOpen() then
 					clickRod(rod)
-					waitUntil(function() return lineOut() or STATE.inMini end, FISH.CAST_TIMEOUT)
-				elseif lineOut() and not STATE.inMini then
+					waitUntil(function() return lineOut() or miniOpen() end, FISH.CAST_TIMEOUT)
+				elseif lineOut() and not miniOpen() then
 					local before = STATE.fishCount or 0
-					waitUntil(function() return onHook() or STATE.inMini or not lineOut() end, FISH.BITE_TIMEOUT)
-					if onHook() and not STATE.inMini then
+					waitUntil(function() return onHook() or miniOpen() or not lineOut() end, FISH.BITE_TIMEOUT)
+					if onHook() and not miniOpen() then
 						clickRod(equipBestRod() or rod)
-						waitUntil(function() return not lineOut() or STATE.inMini or (STATE.fishCount or 0) > before end, FISH.REEL_TIMEOUT)
+						waitUntil(function() return not lineOut() or miniOpen() or (STATE.fishCount or 0) > before end, FISH.REEL_TIMEOUT)
 					elseif lineOut() then
 						clickRod(equipBestRod() or rod)
 						waitUntil(function() return not lineOut() end, FISH.REEL_TIMEOUT)
@@ -593,18 +941,15 @@ end
 function fishStep()
 	if not FISH.ON then return end
 	hookListeners()
-
-	if not qHist(FISH.Q_FAVOR) and stepFavor() then castLoop() return end
-	if not findRod() then equipRod("Wood Rod") end
 	if not findRod() then castLoop() return end
-
-	if superMode() then stepSuperQuest() end
-
-	if not STATE.pause and not lineOut() and not STATE.inMini then
+	if not STATE.pause and not lineOut() and not miniOpen() then
 		cookAndSell(false)
 	end
-
 	castLoop()
+end
+
+function hubRunning()
+	return FISH.ON or QUEST.ON
 end
 
 function spawnOpen()
@@ -635,30 +980,33 @@ end
 function syncCfg()
 	local cfg = getgenv().SigmaFishConfig or {}
 	FISH.ON = cfg.AutoFish == true
-	FISH.SUPER = cfg.AutoSuperRod == true
 	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
 	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
+	QUEST.ON = cfg.AutoQuest == true
+	QUEST.SEL = cfg.QuestSelect or QUEST.SEL
 	STATE.pause = not FISH.ON
 end
 
-function fishTick()
+function hubTick()
 	syncCfg()
-	if not FISH.ON or not isActive() then return end
+	if not hubRunning() or not isActive() then return end
 	if ensureSpawn() then return end
 	if spawnOpen() or not worldReady() then return end
-	fishStep()
+	if QUEST.ON then questStep() end
+	if FISH.ON then fishStep() end
 end
 
 function startLoop()
 	syncCfg()
 	if getgenv().__SIGMA_FISH_RUNNING then return end
+	if not hubRunning() then return end
 	RUN.id += 1
 	local run = RUN.id
 	getgenv().__SIGMA_FISH_RUNNING = true
 	getgenv().__SIGMA_FISH_RUN_ID = run
 	task.spawn(function()
 		while getgenv().__SIGMA_FISH_RUNNING and getgenv().__SIGMA_FISH_RUN_ID == run do
-			pcall(fishTick)
+			pcall(hubTick)
 			task.wait(FISH.LOOP_DELAY)
 		end
 	end)
@@ -666,8 +1014,6 @@ end
 
 function stopLoop()
 	getgenv().__SIGMA_FISH_RUNNING = false
-	FISH.ON = false
-	STATE.pause = true
 	STATE.loopRunning = false
 end
 
@@ -677,15 +1023,21 @@ function SigmaFish.setAutoFish(on)
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 	getgenv().SigmaFishConfig.AutoFish = on == true
 	syncCfg()
-	if on then startLoop() else stopLoop() end
+	if on then startLoop() elseif not QUEST.ON then stopLoop() end
 end
 
-function SigmaFish.setAutoSuperRod(on)
+function SigmaFish.setAutoQuest(on)
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-	getgenv().SigmaFishConfig.AutoSuperRod = on == true
-	if on then getgenv().SigmaFishConfig.AutoFish = true end
+	getgenv().SigmaFishConfig.AutoQuest = on == true
 	syncCfg()
-	startLoop()
+	if on or FISH.ON then startLoop() elseif not FISH.ON then stopLoop() end
+end
+
+function SigmaFish.setQuestSelect(name)
+	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+	getgenv().SigmaFishConfig.QuestSelect = name
+	QUEST.SEL = name
+	syncCfg()
 end
 
 function SigmaFish.setAutoCookSell(on)
@@ -700,30 +1052,40 @@ function SigmaFish.setSellAt(n)
 	syncCfg()
 end
 
+function SigmaFish.getQuestList()
+	return QUEST.LIST
+end
+
 function SigmaFish.cookSell()
 	return cookAndSell(true)
 end
 
 function SigmaFish.getStatus()
 	syncCfg()
+	local q = getQuests()
 	return {
 		autoFish = FISH.ON,
-		autoSuperRod = FISH.SUPER,
+		autoQuest = QUEST.ON,
+		questSelect = QUEST.SEL,
 		autoCookSell = FISH.AUTO_SELL,
 		sellAt = FISH.SELL_AT,
 		fishCount = STATE.fishCount,
-		inMinigame = STATE.inMini,
-		superMode = superMode(),
-		quest = getQuests() and getQuests().Active,
+		inMinigame = STATE.inMini or miniOpen(),
+		questActive = q and q.Active,
+		questDone = QUEST.SEL and qHist(QUEST.SEL) or false,
 		sellable = countSellable(),
 	}
 end
 
 function SigmaFish.isRunning()
-	return getgenv().__SIGMA_FISH_RUNNING and FISH.ON
+	return getgenv().__SIGMA_FISH_RUNNING and hubRunning()
 end
 
 function SigmaFish.stop()
+	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+	getgenv().SigmaFishConfig.AutoFish = false
+	getgenv().SigmaFishConfig.AutoQuest = false
+	syncCfg()
 	stopLoop()
 end
 
