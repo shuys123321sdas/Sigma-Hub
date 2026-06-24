@@ -9,6 +9,7 @@ getgenv().SigmaConfig = CFG
 
 Players = game:GetService("Players")
 ReplicatedFirst = game:GetService("ReplicatedFirst")
+ReplicatedStorage = game:GetService("ReplicatedStorage")
 UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 VirtualUser = game:GetService("VirtualUser")
@@ -18,6 +19,7 @@ player = Players.LocalPlayer
 UNC = {
 	mobile = false,
 	vim = VirtualInputManager ~= nil,
+	vuser = VirtualUser ~= nil,
 	fireSignal = type(firesignal) == "function",
 	getConns = type(getconnections) == "function",
 }
@@ -33,6 +35,12 @@ do
 end
 
 RUN = { id = 0 }
+HUB = {
+	AUTO_SPAWN = true,
+	ANTI_AFK = true,
+	ANTI_AFK_JUMP = 180,
+	LOOP_DELAY = 0.35,
+}
 FISH = {
 	ON = false, AUTO_SELL = true,
 	SELL_AT = 40, LOOP_DELAY = 0.25,
@@ -60,6 +68,7 @@ STATE = {
 	pause = false, loopRunning = false, inMini = false, solving = false,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
+	m1RunId = 0,
 }
 
 QUEST = {
@@ -124,7 +133,7 @@ do
 end
 
 function isActive()
-	return getgenv().__SIGMA_FISH_RUNNING and getgenv().__SIGMA_FISH_RUN_ID == RUN.id
+	return getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == RUN.id
 end
 
 function getData()
@@ -766,20 +775,37 @@ function tpNearMob(mob)
 	return true
 end
 
-function m1Attack()
-	if VirtualUser then
-		local cam = workspace.CurrentCamera
-		if cam then
-			pcall(function()
-				VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
-				task.wait(0.03)
-				VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
-			end)
-			return
+function m1AttackOnce()
+	if not VirtualUser then return false end
+	local cam = workspace.CurrentCamera
+	if not cam then return false end
+	pcall(function()
+		VirtualUser:Button1Down(Vector2.new(0, 0), cam.CFrame)
+		task.wait(0.03)
+		VirtualUser:Button1Up(Vector2.new(0, 0), cam.CFrame)
+	end)
+	return true
+end
+
+function startM1Loop()
+	local run = STATE.m1RunId + 1
+	STATE.m1RunId = run
+	task.spawn(function()
+		while isActive() and STATE.m1RunId == run do
+			task.wait(QUEST.ATTACK_CD)
+			if not isActive() or STATE.m1RunId ~= run then break end
+			m1AttackOnce()
 		end
-	end
-	local tool = player.Character and player.Character:FindFirstChildOfClass("Tool")
-	if tool and isCombatTool(tool) then pcall(function() tool:Activate() end) end
+	end)
+	return run
+end
+
+function stopM1Loop()
+	STATE.m1RunId += 1
+end
+
+function m1Attack()
+	m1AttackOnce()
 end
 
 function attackBurstOnMob(mob)
@@ -787,22 +813,22 @@ function attackBurstOnMob(mob)
 	if not hum or hum.Health <= 0 then return true end
 	ensureCombatReady()
 	tpNearMob(mob)
+	startM1Loop()
 	local t0, lastHp, stall = tick(), hum.Health, 0
 	while isActive() and tick() - t0 < QUEST.ATTACK_BURST do
 		hum = mob:FindFirstChildOfClass("Humanoid")
-		if not hum or hum.Health <= 0 then return true end
+		if not hum or hum.Health <= 0 then break end
 		tpNearMob(mob)
-		ensureCombatReady()
-		m1Attack()
-		task.wait(QUEST.ATTACK_CD)
-		if hum.Health <= 0 then return true end
+		task.wait(0.1)
+		if hum.Health <= 0 then break end
 		if hum.Health >= lastHp then
-			stall += QUEST.ATTACK_CD
+			stall += 0.1
 			if stall >= 2 then tpNearMob(mob) stall = 0 end
 		else
 			lastHp, stall = hum.Health, 0
 		end
 	end
+	stopM1Loop()
 	hum = mob:FindFirstChildOfClass("Humanoid")
 	return not hum or hum.Health <= 0
 end
@@ -1837,12 +1863,50 @@ function spawnOpen()
 end
 
 function ensureSpawn()
+	if HUB.AUTO_SPAWN == false then return false end
 	if not spawnOpen() then return false end
 	exec("Load", { "Load" })
-	local load = player.PlayerGui:FindFirstChild("Load")
+	local pg = player and player:FindFirstChild("PlayerGui")
+	local load = pg and pg:FindFirstChild("Load")
 	pcall(function() if load then load.Enabled = false end end)
 	task.wait(0.4)
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam then cam.CameraType = Enum.CameraType.Track end
+	end)
 	return true
+end
+
+function setupAntiAfk()
+	if HUB.ANTI_AFK == false then return end
+	local old = getgenv().__SIGMA_AntiAfkConn
+	if old then pcall(function() old:Disconnect() end) end
+	getgenv().__SIGMA_AntiAfkConn = player.Idled:Connect(function()
+		if UNC.vuser then
+			pcall(function()
+				VirtualUser:CaptureController()
+				VirtualUser:ClickButton2(Vector2.new())
+			end)
+		end
+	end)
+	pcall(function()
+		if getgenv().__SIGMA_AntiAfkHopBlocked then return end
+		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+			if d.Name == "RequestHop" and (d:IsA("RemoteEvent") or d:IsA("BindableEvent")) then
+				if type(d.Fire) == "function" then d.Fire = function() end end
+				getgenv().__SIGMA_AntiAfkHopBlocked = true
+			end
+		end
+	end)
+	local myRun = RUN.id
+	task.spawn(function()
+		while isActive() and getgenv().__SIGMA_HUB_RUN_ID == myRun do
+			task.wait(HUB.ANTI_AFK_JUMP)
+			if not (isActive() and getgenv().__SIGMA_HUB_RUN_ID == myRun) then break end
+			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum then pcall(function() hum.Jump = true end) end
+		end
+	end)
 end
 
 function worldReady()
@@ -1863,27 +1927,21 @@ function syncCfg()
 	QUEST.AUTO = cfg.AutoQuest == true
 	QUEST.EXPERTISE = cfg.AutoExpertise == true
 	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
+	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
+	HUB.ANTI_AFK = cfg.AntiAfk ~= false
 	if not STATE.cooking then
 		STATE.pause = false
 	end
 end
 
-function ensureLoopRunning()
-	syncCfg()
-	if not hubRunning() then
-		stopLoop()
-		return
+function serviceTick()
+	if HUB.AUTO_SPAWN then
+		if ensureSpawn() then return end
 	end
-	if getgenv().__SIGMA_FISH_RUNNING then
-		return
-	end
-	startLoop()
 end
 
-function hubTick()
-	syncCfg()
-	if not hubRunning() or not isActive() then return end
-	if ensureSpawn() then return end
+function featureTick()
+	if not hubRunning() then return end
 	if spawnOpen() or not worldReady() then return end
 	if QUEST.EXPERTISE then
 		stepExpertiseQuest()
@@ -1893,24 +1951,39 @@ function hubTick()
 	if FISH.ON and not questWorkActive() then fishStep() end
 end
 
-function startLoop()
+function hubTick()
 	syncCfg()
-	if getgenv().__SIGMA_FISH_RUNNING then return end
-	if not hubRunning() then return end
+	if not isActive() then return end
+	serviceTick()
+	if spawnOpen() then return end
+	featureTick()
+end
+
+function startHubLoop()
+	syncCfg()
+	if getgenv().__SIGMA_HUB_RUNNING then return end
 	RUN.id += 1
 	local run = RUN.id
+	getgenv().__SIGMA_HUB_RUNNING = true
+	getgenv().__SIGMA_HUB_RUN_ID = run
 	getgenv().__SIGMA_FISH_RUNNING = true
 	getgenv().__SIGMA_FISH_RUN_ID = run
+	setupAntiAfk()
 	task.spawn(function()
-		while getgenv().__SIGMA_FISH_RUNNING and getgenv().__SIGMA_FISH_RUN_ID == run do
+		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
 			pcall(hubTick)
-			task.wait(FISH.LOOP_DELAY)
+			task.wait(HUB.LOOP_DELAY)
 		end
 	end)
 end
 
+function ensureLoopRunning()
+	syncCfg()
+	startHubLoop()
+end
+
 function stopLoop()
-	getgenv().__SIGMA_FISH_RUNNING = false
+	stopM1Loop()
 	STATE.loopRunning = false
 end
 
@@ -1990,6 +2063,8 @@ function SigmaFish.getStatus()
 	syncCfg()
 	local q = getQuests()
 	return {
+		autoSpawn = HUB.AUTO_SPAWN,
+		antiAfk = HUB.ANTI_AFK,
 		autoFish = FISH.ON,
 		autoQuest = QUEST.AUTO,
 		autoExpertise = QUEST.EXPERTISE,
@@ -2013,7 +2088,7 @@ function SigmaFish.getStatus()
 end
 
 function SigmaFish.isRunning()
-	return getgenv().__SIGMA_FISH_RUNNING and hubRunning()
+	return getgenv().__SIGMA_HUB_RUNNING == true
 end
 
 function SigmaFish.stop()
@@ -2027,7 +2102,9 @@ function SigmaFish.stop()
 	stopLoop()
 end
 
--- Reset loop khi reload Main.lua (tránh loop cũ chặn startLoop)
+-- Reset loop khi reload Main.lua
+getgenv().__SIGMA_HUB_RUNNING = false
+getgenv().__SIGMA_HUB_RUN_ID = nil
 getgenv().__SIGMA_FISH_RUNNING = false
 getgenv().__SIGMA_FISH_RUN_ID = nil
 
@@ -2041,7 +2118,10 @@ do
 	if cfg.SellAt == nil then cfg.SellAt = 40 end
 	if cfg.QuestPick == nil then cfg.QuestPick = {} end
 	if cfg.AutoExpertise == nil then cfg.AutoExpertise = false end
+	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
+	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
 	syncCfg()
+	startHubLoop()
 end
 
 getgenv().SigmaFish = SigmaFish
