@@ -209,6 +209,8 @@ SAM = {
 	ON = true,
 	PITY_STOP = 99,
 	QUEST = "Help Sam",
+	CLAIM_WAIT = 0.2,
+	_actionAt = {},
 }
 
 AFFINITY = {
@@ -598,56 +600,132 @@ function samIsManagedActive(name)
 	return false
 end
 
-function trySamClaim(name, info)
-	local d = getData()
-	local stats = d and d.Stats
-	if not stats then return false end
-	local cd = questCooldownRemaining(info.quest)
-	local q = d.Quests
-	local active = q and q.Active
-	if active and active ~= "" and active ~= info.quest and not samIsManagedActive(active) then
-		hakiLog("samforce", string.format("[Sam] active '%s' -> force accept/claim", active), 8)
+function samActionReady(key, interval)
+	local now = os.clock()
+	local k = "sam:" .. tostring(key or "act")
+	if now - (SAM._actionAt[k] or 0) < (interval or 2.5) then return false end
+	SAM._actionAt[k] = now
+	return true
+end
+
+function samFindNPC()
+	local m = findNPC("Sam")
+	if m then return m end
+	for _, rootName in ipairs({ "Ignore", "MapFolder" }) do
+		local root = workspace:FindFirstChild(rootName)
+		if root then
+			for _, inst in root:GetDescendants() do
+				if inst:IsA("Model") then
+					local dlg = inst:GetAttribute("DialogueModule")
+					if inst.Name == "Sam" or dlg == "Sam" then return inst end
+				end
+			end
+		end
 	end
-	if not stats.CompletedStarterCompass and cd <= 0 then
-		local m = findNPC(name)
-		if not m then return false end
-		clickNPC(m)
-		exec("QuestEvents", { "Accept", info.quest })
-		print(string.format("[Sigma Sam] ACCEPTED '%s' (kill thugs first)", info.quest))
+	return nil
+end
+
+function samCompassTokensReady(stats)
+	if not stats then return false end
+	local compass = tonumber(stats.Compass) or 0
+	if compass < 1 then return false end
+	local storage = tonumber(stats.CompassStorage)
+	if storage and storage > 0 then return compass >= storage end
+	return true
+end
+
+function samCloseDialogue()
+	local pg = player:FindFirstChild("PlayerGui")
+	local dlg = pg and pg:FindFirstChild("QuestGui") and pg.QuestGui:FindFirstChild("Dialogue")
+	if dlg and dlg.Visible then
+		pcall(function() dlg.Visible = false end)
 		return true
 	end
-	if not SAM.ON or (tonumber(stats.Compass) or 0) < 1 then return false end
+	return false
+end
+
+function samClickNPC(model)
+	if not model then return false end
+	local part = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart", true)
+	if not part then return false end
+	tpNear(model)
+	setMerchant(model)
+	local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
+	if cd and fireclickdetector then pcall(fireclickdetector, cd) end
+	task.wait(0.15)
+	return true
+end
+
+function samClaimCompass()
+	if not SAM.ON then return false end
+	local stats = getData() and getData().Stats
+	if not samCompassTokensReady(stats) then return false end
+	if not samActionReady("claim", 2.5) then return false end
 	local pity = tonumber(stats.GoldenCompassPity) or 0
 	local remaining = SAM.PITY_STOP - pity
 	if remaining <= 0 then
 		hakiLog("sampity", string.format("[Sam] GoldenCompassPity %d/%d -> STOP claim", pity, SAM.PITY_STOP), 30)
 		return false
 	end
-	local m = findNPC(name)
-	if not m then return false end
-	clickNPC(m)
+	local m = samFindNPC()
+	if not m then
+		hakiLog("samnpc", string.format("[Sam] ready %s/%s but NPC not found",
+			tostring(stats.Compass), tostring(stats.CompassStorage or 1)), 10)
+		return false
+	end
+	if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
+	samClickNPC(m)
+	task.wait(SAM.CLAIM_WAIT)
+	setMerchant(m)
+	local cur = player:FindFirstChild("CurrentMerchant")
+	local merchant = (cur and cur:IsA("ObjectValue") and cur.Value) or m
 	local canClaim = math.floor(tonumber(stats.Compass) or 0)
 	local amount = math.min(canClaim, 10, remaining)
 	if amount < 1 then return false end
-	exec("Sam", { "ClaimAmount", m, amount })
-	print(string.format("[Sigma Sam] claim %d compass (Compass=%s pity=%d/%d)",
-		amount, tostring(stats.Compass), pity, SAM.PITY_STOP))
-	return true
+	local ok = exec("Sam", { "ClaimAmount", merchant, amount })
+	print(string.format("[Sigma Sam] ClaimAmount x%d @ %s (Compass=%s/%s pity=%d ok=%s)",
+		amount, tostring(m.Name), tostring(stats.Compass), tostring(stats.CompassStorage or 1), pity, tostring(ok)))
+	task.defer(samCloseDialogue)
+	return ok ~= false
+end
+
+function samTryAccept(name, info)
+	local stats = getData() and getData().Stats
+	if not stats then return false end
+	local cd = questCooldownRemaining(info.quest)
+	local q = getQuests()
+	local active = q and q.Active
+	if active and active ~= "" and active ~= info.quest and not samIsManagedActive(active) then
+		hakiLog("samforce", string.format("[Sam] active '%s' -> force accept/claim", active), 8)
+	end
+	if not stats.CompletedStarterCompass and cd <= 0 and (not q or q.Active ~= SAM.QUEST) then
+		if not samActionReady("accept", 3) then return false end
+		local m = samFindNPC()
+		if not m then return false end
+		samClickNPC(m)
+		exec("QuestEvents", { "Accept", info.quest })
+		task.defer(samCloseDialogue)
+		print(string.format("[Sigma Sam] ACCEPTED '%s' (kill thugs before claim)", info.quest))
+		return true
+	end
+	return false
 end
 
 function stepSam()
 	if not SAM.ON then return false end
-	local d = getData()
-	local q = d and d.Quests
+	if samClaimCompass() then return true end
+	local q = getQuests()
 	if not q then return false end
 	local info = QUEST.DB["Sam"]
 	if not info then return false end
 	if q.Active == SAM.QUEST then
 		if q.Completed == true then
-			local m = findNPC("Sam")
+			if not samActionReady("questclaim", 2.5) then return true end
+			local m = samFindNPC()
 			if m then
-				clickNPC(m)
+				samClickNPC(m)
 				exec("QuestEvents", { "Claim" })
+				task.defer(samCloseDialogue)
 				print("[Sigma Sam] CLAIMED 'Help Sam'")
 			end
 		else
@@ -655,7 +733,7 @@ function stepSam()
 		end
 		return true
 	end
-	return trySamClaim("Sam", info)
+	return samTryAccept("Sam", info)
 end
 
 function tpFace(model, dist, up)
