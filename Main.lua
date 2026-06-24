@@ -5553,6 +5553,7 @@ function SigmaFish.setAutoFish(on)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoFish = on == true
 	getgenv().SigmaFishConfig = cfg
+	FISH.ON = cfg.AutoFish
 	STATE.pause = false
 	ensureLoopRunning()
 end
@@ -5793,6 +5794,15 @@ function SigmaFish.applyConfig()
 	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
 	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
 	if cfg.HideName == nil then cfg.HideName = true end
+	if cfg.AutoCookSell == nil then cfg.AutoCookSell = true end
+	if cfg.AutoFish == nil then cfg.AutoFish = false end
+	if cfg.AutoQuest == nil then cfg.AutoQuest = false end
+	if cfg.AutoExpertise == nil then cfg.AutoExpertise = false end
+	if cfg.AutoKenbunshoku == nil then cfg.AutoKenbunshoku = false end
+	if cfg.AutoBusoshoku == nil then cfg.AutoBusoshoku = false end
+	if cfg.FastHaki == nil then cfg.FastHaki = false end
+	if cfg.AutoRayleigh == nil then cfg.AutoRayleigh = false end
+	if cfg.AutoAffinity == nil then cfg.AutoAffinity = false end
 	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = false end
 	if cfg.AutoDropCompass == nil then cfg.AutoDropCompass = false end
 	if cfg.AutoFindSam == nil then cfg.AutoFindSam = false end
@@ -5805,75 +5815,35 @@ function SigmaFish.applyConfig()
 	if cfg.CacheDropPick == nil then cfg.CacheDropPick = {} end
 	if cfg.AutoCacheDrop == nil then cfg.AutoCacheDrop = false end
 	if cfg.AutoUseConsumables == nil then cfg.AutoUseConsumables = true end
+	if cfg.SellAt == nil then cfg.SellAt = 40 end
 	getgenv().SigmaFishConfig = cfg
-	QUEST.PICK = cfg.QuestPick
-	local wantAuto = cfg.AutoQuest == true
-	local wantExp = cfg.AutoExpertise == true
-	if wantAuto ~= QUEST.AUTO then
-		SigmaFish.setAutoQuest(wantAuto)
-	end
-	if wantExp ~= QUEST.EXPERTISE then
-		SigmaFish.setAutoExpertise(wantExp)
-	end
-	local wantKen = cfg.AutoKenbunshoku == true
-	local wantBuso = cfg.AutoBusoshoku == true
-	local wantFast = cfg.FastHaki == true
-	local wantRay = cfg.AutoRayleigh == true
-	if wantKen ~= HAKI.AUTO_KEN and SigmaFish.setAutoKenbunshoku then
-		SigmaFish.setAutoKenbunshoku(wantKen)
-	elseif wantKen then HAKI.AUTO_KEN = true end
-	if wantBuso ~= HAKI.AUTO_BUSO and SigmaFish.setAutoBusoshoku then
-		SigmaFish.setAutoBusoshoku(wantBuso)
-	elseif wantBuso then HAKI.AUTO_BUSO = true end
-	if wantFast ~= HAKI.FAST and SigmaFish.setFastHaki then
-		SigmaFish.setFastHaki(wantFast)
-	elseif wantFast then HAKI.FAST = true end
-	if wantRay ~= RAYLEIGH.ON and SigmaFish.setAutoRayleigh then
-		SigmaFish.setAutoRayleigh(wantRay)
-	elseif wantRay then RAYLEIGH.ON = true end
-	local wantAff = cfg.AutoAffinity == true
-	if wantAff ~= AFFINITY.ON and SigmaFish.setAutoAffinity then
-		SigmaFish.setAutoAffinity(wantAff)
-	elseif wantAff then
-		AFFINITY.ON = true
-		AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
-		refreshAffinityLoop()
-	end
-	if not wantAff then stopAffinityLoop() end
-	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
-	local wantHide = cfg.HideName ~= false
-	local wantSam = cfg.AutoClaimSam == true
-	local wantDrop = cfg.AutoDropCompass == true
-	local wantFind = cfg.AutoFindSam == true
-	local wantSkill = cfg.AutoSkill == true
-	if wantHide ~= (HUB.HIDE_NAME == true) and SigmaFish.setHideName then
-		SigmaFish.setHideName(wantHide)
-	elseif wantHide then HUB.HIDE_NAME = true end
-	if wantSam ~= SAM.ON and SigmaFish.setAutoClaimSam then
-		SigmaFish.setAutoClaimSam(wantSam)
-	elseif wantSam then SAM.ON = true end
-	if wantDrop ~= COMPASS.DROP_ON and SigmaFish.setAutoDropCompass then
-		SigmaFish.setAutoDropCompass(wantDrop)
-	elseif wantDrop then COMPASS.DROP_ON = true end
-	if wantFind ~= COMPASS.FIND_ON and SigmaFish.setAutoFindSam then
-		SigmaFish.setAutoFindSam(wantFind)
-	elseif wantFind then
-		COMPASS.FIND_ON = true
-		refreshCompassFindLoop()
-	end
-	if wantSkill ~= SKILL.ON and SigmaFish.setAutoSkill then
-		SigmaFish.setAutoSkill(wantSkill)
-	elseif wantSkill then
-		SKILL.ON = true
-		SKILL.HOLD_SEC = tonumber(cfg.SkillHoldSec) or 0.5
-		refreshSkillLoop()
-	end
-	if not wantSkill then stopSkillLoop() end
-	if not wantFind then stopCompassFindLoop() end
-	local wantWl = cfg.AutoWhitelistRejoin == true
-	if wantWl ~= REJOIN.ON and SigmaFish.setAutoWhitelistRejoin then
-		SigmaFish.setAutoWhitelistRejoin(wantWl)
-	elseif wantWl then REJOIN.ON = true end
+
+	SigmaFish.setAutoQuest(cfg.AutoQuest == true)
+	SigmaFish.setAutoExpertise(cfg.AutoExpertise == true)
+	SigmaFish.setAutoFish(cfg.AutoFish == true)
+	SigmaFish.setAutoCookSell(cfg.AutoCookSell ~= false)
+	SigmaFish.setAutoSpawn(cfg.AutoSpawn ~= false)
+	SigmaFish.setAntiAfk(cfg.AntiAfk ~= false)
+	SigmaFish.setSellAt(cfg.SellAt)
+	SigmaFish.setAutoKenbunshoku(cfg.AutoKenbunshoku == true)
+	SigmaFish.setAutoBusoshoku(cfg.AutoBusoshoku == true)
+	SigmaFish.setFastHaki(cfg.FastHaki == true)
+	SigmaFish.setAutoRayleigh(cfg.AutoRayleigh == true)
+	SigmaFish.setAutoAffinity(cfg.AutoAffinity == true)
+	SigmaFish.setHideName(cfg.HideName ~= false)
+	SigmaFish.setAutoClaimSam(cfg.AutoClaimSam == true)
+	SigmaFish.setAutoDropCompass(cfg.AutoDropCompass == true)
+	SigmaFish.setAutoFindSam(cfg.AutoFindSam == true)
+	SigmaFish.setAutoSkill(cfg.AutoSkill == true)
+	SigmaFish.setSkillKeys(cfg.SkillKeys)
+	SigmaFish.setSkillHoldSec(cfg.SkillHoldSec)
+	SigmaFish.setRejoinWhitelist(cfg.RejoinWhitelist)
+	SigmaFish.setAutoWhitelistRejoin(cfg.AutoWhitelistRejoin == true)
+	SigmaFish.setCacheUsePick(cfg.CacheUsePick)
+	SigmaFish.setCacheDropPick(cfg.CacheDropPick)
+	SigmaFish.setAutoCacheDrop(cfg.AutoCacheDrop == true)
+	SigmaFish.setAutoUseConsumables(cfg.AutoUseConsumables ~= false)
+
 	STATE.cooking = false
 	STATE.pause = false
 	refreshHubServices()
