@@ -84,10 +84,10 @@ end
 CACHE = {
 	KEYS = { "Copper", "Silver", "Gold", "Platinum", "Compass" },
 	NAMES = {
-		Copper = { "Copper" },
-		Silver = { "Silver" },
-		Gold = { "Gold" },
-		Platinum = { "Platinum" },
+		Copper = { "Copper", "Copper Cache" },
+		Silver = { "Silver", "Silver Cache" },
+		Gold = { "Gold", "Gold Cache" },
+		Platinum = { "Platinum", "Platinum Cache" },
 		Compass = { "Compass", "Starter Compass" },
 	},
 	AUTO_CONSUME = true,
@@ -2659,8 +2659,12 @@ end
 function cacheToolIsType(toolName, typeKey)
 	local names = CACHE.NAMES[typeKey]
 	if not names or not toolName then return false end
+	local lower = string.lower(toolName)
 	for _, n in ipairs(names) do
-		if toolName == n then return true end
+		if string.lower(n) == lower then return true end
+	end
+	if typeKey ~= "Compass" and lower == string.lower(typeKey .. " Cache") then
+		return true
 	end
 	return false
 end
