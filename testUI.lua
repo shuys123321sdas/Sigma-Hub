@@ -83,6 +83,7 @@ function SigmaUI.build(hub, Fish, opts)
 	cfg.AutoClaimSam = cfg.AutoClaimSam == true
 	cfg.AutoDropCompass = cfg.AutoDropCompass == true
 	cfg.AutoFindSam = cfg.AutoFindSam == true
+	cfg.CompassFlyMode = cfg.CompassFlyMode ~= false
 	cfg.AutoSkill = cfg.AutoSkill == true
 	cfg.SkillHoldSec = tonumber(cfg.SkillHoldSec) or 0.5
 	cfg.SkillKeys = cfg.SkillKeys or {}
@@ -208,6 +209,7 @@ function SigmaUI.build(hub, Fish, opts)
 		c.AutoClaimSam = c.AutoClaimSam == true
 		c.AutoDropCompass = c.AutoDropCompass == true
 		c.AutoFindSam = c.AutoFindSam == true
+		c.CompassFlyMode = c.CompassFlyMode ~= false
 		c.AutoSkill = c.AutoSkill == true
 		c.AutoWhitelistRejoin = c.AutoWhitelistRejoin == true
 		c.AutoCacheDrop = c.AutoCacheDrop == true
@@ -290,6 +292,7 @@ function SigmaUI.build(hub, Fish, opts)
 		Sigma_AutoClaimSam = "AutoClaimSam",
 		Sigma_AutoDropCompass = "AutoDropCompass",
 		Sigma_AutoFindSam = "AutoFindSam",
+		Sigma_CompassFlyMode = "CompassFlyMode",
 		Sigma_AutoSkill = "AutoSkill",
 		Sigma_AutoWhitelistRejoin = "AutoWhitelistRejoin",
 		Sigma_AutoCacheDrop = "AutoCacheDrop",
@@ -468,7 +471,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoSpawnToggle, antiAfkToggle, themeDropdown, autoReloadToggle
 	local autoKenToggle, autoBusoToggle, fastHakiToggle, autoRayleighToggle
 	local autoAffinityToggle, hideNameToggle, hakiStatusPara
-	local autoClaimSamToggle, autoDropCompassToggle, autoFindSamToggle
+	local autoClaimSamToggle, autoDropCompassToggle, autoFindSamToggle, autoFlySamToggle, hubHealthPara
 	local autoSkillToggle, skillKeysDropdown, skillHoldInput
 	local autoWhitelistToggle, rejoinWhitelistInput
 	local cacheCountPara, cacheUseDropdown, cacheDropDropdown
@@ -815,6 +818,12 @@ function SigmaUI.build(hub, Fish, opts)
 
 		CompassTab:Paragraph({
 			Title = "Note",
+			Content = "Auto Find Sam and Auto Drop Compass are mutually exclusive.",
+		})
+
+		hubHealthPara = CompassTab:Paragraph({
+			Title = "Hub health",
+			Desc = "Starting…",
 		})
 
 		autoClaimSamToggle = CompassTab:Toggle({
@@ -837,6 +846,13 @@ function SigmaUI.build(hub, Fish, opts)
 			Flag = "Sigma_AutoDropCompass",
 			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				if v == true then
+					getgenv().SigmaFishConfig.AutoFindSam = false
+					if autoFindSamToggle and autoFindSamToggle.Set then
+						pcall(function() autoFindSamToggle:Set(false) end)
+					end
+					if Fish and Fish.setAutoFindSam then Fish.setAutoFindSam(false) end
+				end
 				getgenv().SigmaFishConfig.AutoDropCompass = v == true
 				if Fish and Fish.setAutoDropCompass then Fish.setAutoDropCompass(v) end
 				notify(hub, "Auto Drop Compass", v and "ON" or "OFF", "package-minus", 2)
@@ -850,11 +866,47 @@ function SigmaUI.build(hub, Fish, opts)
 			Flag = "Sigma_AutoFindSam",
 			Callback = uiCallback(function(v)
 				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				if v == true then
+					getgenv().SigmaFishConfig.AutoDropCompass = false
+					if autoDropCompassToggle and autoDropCompassToggle.Set then
+						pcall(function() autoDropCompassToggle:Set(false) end)
+					end
+					if Fish and Fish.setAutoDropCompass then Fish.setAutoDropCompass(false) end
+				end
 				getgenv().SigmaFishConfig.AutoFindSam = v == true
 				if Fish and Fish.setAutoFindSam then Fish.setAutoFindSam(v) end
 				notify(hub, "Auto Find Sam", v and "ON" or "OFF", "search", 2)
 			end),
 		})
+
+		autoFlySamToggle = CompassTab:Toggle({
+			Title = "Find Sam Fly Mode",
+			Desc = "Bay cao theo kim; kim đảo thì hạ xuống hunt spawner tại vị trí đó",
+			Value = cfg.CompassFlyMode ~= false,
+			Default = true,
+			Flag = "Sigma_CompassFlyMode",
+			Callback = uiCallback(function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.CompassFlyMode = v ~= false
+				if Fish and Fish.setCompassFlyMode then Fish.setCompassFlyMode(v) end
+				notify(hub, "Compass Fly Mode", v ~= false and "ON" or "OFF", "plane", 2)
+			end),
+		})
+
+		task.spawn(function()
+			local FishMod = Fish or getgenv().SigmaFish
+			while hubHealthPara and hubHealthPara.SetDesc do
+				local text = "Hub idle"
+				if FishMod and FishMod.getDiagnostics then
+					local ok, diag = pcall(FishMod.getDiagnostics)
+					if ok and type(diag) == "table" then
+						text = diag.summary or text
+					end
+				end
+				pcall(function() hubHealthPara:SetDesc(text) end)
+				task.wait(15)
+			end
+		end)
 
 		AutoSkillTab:Section({ Title = "Skill Spam", Icon = "keyboard", Box = true, BoxBorder = true })
 
@@ -1209,6 +1261,7 @@ function SigmaUI.build(hub, Fish, opts)
 		setToggle(autoClaimSamToggle, c.AutoClaimSam)
 		setToggle(autoDropCompassToggle, c.AutoDropCompass)
 		setToggle(autoFindSamToggle, c.AutoFindSam)
+		setToggle(autoFlySamToggle, c.CompassFlyMode ~= false)
 		setToggle(autoSkillToggle, c.AutoSkill)
 		setToggle(autoWhitelistToggle, c.AutoWhitelistRejoin)
 		setToggle(autoCacheDropToggle, c.AutoCacheDrop)
@@ -1266,6 +1319,7 @@ function SigmaUI.build(hub, Fish, opts)
 		if autoClaimSamToggle and autoClaimSamToggle.Value ~= nil then c.AutoClaimSam = autoClaimSamToggle.Value == true end
 		if autoDropCompassToggle and autoDropCompassToggle.Value ~= nil then c.AutoDropCompass = autoDropCompassToggle.Value == true end
 		if autoFindSamToggle and autoFindSamToggle.Value ~= nil then c.AutoFindSam = autoFindSamToggle.Value == true end
+		if autoFlySamToggle and autoFlySamToggle.Value ~= nil then c.CompassFlyMode = autoFlySamToggle.Value ~= false end
 		if autoSkillToggle and autoSkillToggle.Value ~= nil then c.AutoSkill = autoSkillToggle.Value == true end
 		if skillKeysDropdown and skillKeysDropdown.Value ~= nil then c.SkillKeys = skillKeysDropdown.Value end
 		if skillHoldInput and skillHoldInput.Value ~= nil then
