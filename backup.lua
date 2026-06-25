@@ -278,13 +278,6 @@ COMPASS = {
 	REVERSE_NEEDLE = 0.35,
 	NEEDLE_WARMUP = 0.6,
 	STRICT_NEEDLE = true,
-	FLY_MODE = true,
-	FLY_ALT = 120,
-	FLY_STEP = 38,
-	FLY_MAX_STEPS = 28,
-	FLY_REVERSE_DOT = -0.15,
-	FLY_BACK_ON_REVERSE = 18,
-	FLY_MIN_Y = 60,
 	_spawnerDB = nil,
 	_huntFailStreak = 0,
 	_findRunId = 0,
@@ -509,7 +502,6 @@ function cfgHash()
 		tostring(cfg.AutoSkill), tostring(cfg.AutoCacheDrop), tostring(cfg.AutoUseConsumables),
 		tostring(cfg.AutoKenbunshoku), tostring(cfg.AutoBusoshoku), tostring(cfg.FastHaki),
 		tostring(cfg.AutoRayleigh), tostring(cfg.AutoAffinity), tostring(cfg.AutoWhitelistRejoin),
-		tostring(cfg.CompassFlyMode),
 	}
 	return table.concat(parts, "|")
 end
@@ -541,7 +533,6 @@ function readCfg()
 	RAYLEIGH.ON = cfg.AutoRayleigh == true
 	AFFINITY.ON = cfg.AutoAffinity == true
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
-	COMPASS.FLY_MODE = cfg.CompassFlyMode ~= false
 	if not STATE.cooking then STATE.pause = false end
 end
 
@@ -1476,179 +1467,6 @@ function compassWaitForNeedle(maxSec)
 	return nil
 end
 
-function compassNeedleHoriz()
-	return compassFlatUnit(compassNeedleDir() or Vector3.zero)
-end
-
-function compassSetFlyPos(pos)
-	local hrp = getHRP()
-	if not hrp or not pos then return false end
-	pcall(function() hrp.Anchored = false end)
-	pcall(function() hrp.CFrame = CFrame.new(pos) end)
-	BRING.zeroVel(hrp)
-	return true
-end
-
-function compassAscendForFly()
-	local hrp = getHRP()
-	if not hrp then return nil end
-	local pos = hrp.Position
-	local flyY = math.max(pos.Y + (COMPASS.FLY_ALT or 120), COMPASS.FLY_MIN_Y or 60)
-	local top = Vector3.new(pos.X, flyY, pos.Z)
-	compassSetFlyPos(top)
-	task.wait(0.15)
-	return top
-end
-
-function compassFindSpawnerNearFlip(flipPos, treasureDir)
-	if not flipPos or not treasureDir then return nil end
-	local best, bestDist = nil, math.huge
-	for _, e in ipairs(compassBuildSpawnerDB()) do
-		if not e.sp.Parent then continue end
-		local along, perp = compassRayPerp(flipPos, treasureDir, e.x, e.z)
-		if along >= -8 and perp <= (COMPASS.LINE_WIDTH or 45) then
-			local dx, dz = e.x - flipPos.X, e.z - flipPos.Z
-			local dist = math.sqrt(dx * dx + dz * dz)
-			if dist < bestDist then
-				bestDist = dist
-				best = e
-			end
-		end
-	end
-	return best
-end
-
-function compassFlyUntilReverse(startC)
-	local hrp = getHRP()
-	if not hrp then return nil, nil, false end
-	local top = compassAscendForFly()
-	if not top then return nil, nil, false end
-	compassHoldTool()
-	task.wait(0.12)
-	local flyDir = compassNeedleHoriz()
-	if not flyDir then
-		DIAG.lastCompassFail = "fly_no_needle"
-		return nil, nil, false
-	end
-	diagLog("compass", string.format("fly start Y=%.0f dir=(%.2f,%.2f)", top.Y, flyDir.X, flyDir.Z))
-	local prevNd = flyDir
-	local flyY = top.Y
-	local lastPos = top
-	for step = 1, COMPASS.FLY_MAX_STEPS or 28 do
-		if not getgenv().__SIGMA_COMPASS_FIND then break end
-		if samCountCompassTool() < startC then return lastPos, -flyDir, true end
-		local nd = compassNeedleHoriz()
-		if not nd then
-			task.wait(COMPASS.NEEDLE_POLL or 0.1)
-			continue
-		end
-		if step > 1 and prevNd:Dot(nd) < (COMPASS.FLY_REVERSE_DOT or -0.15) then
-			local back = COMPASS.FLY_BACK_ON_REVERSE or 18
-			local flipPos = Vector3.new(
-				lastPos.X - prevNd.X * back,
-				flyY,
-				lastPos.Z - prevNd.Z * back
-			)
-			local treasureDir = compassFlatUnit(nd) or -prevNd
-			if treasureDir:Dot(prevNd) > 0 then treasureDir = -treasureDir end
-			diagLog("compass", string.format("fly reverse @ step %d — drop hunt", step))
-			DIAG.lastCompassHop = string.format("fly_rev@%.0f,%.0f", flipPos.X, flipPos.Z)
-			return flipPos, treasureDir, false
-		end
-		flyDir = nd
-		prevNd = nd
-		local hrpNow = getHRP()
-		local pos = hrpNow and hrpNow.Position or lastPos
-		local nextPos = Vector3.new(
-			pos.X + flyDir.X * (COMPASS.FLY_STEP or 38),
-			flyY,
-			pos.Z + flyDir.Z * (COMPASS.FLY_STEP or 38)
-		)
-		compassSetFlyPos(nextPos)
-		lastPos = nextPos
-		compassHoldTool()
-		task.wait(0.12)
-	end
-	DIAG.lastCompassFail = "fly_no_reverse"
-	return nil, nil, false
-end
-
-function compassDropHuntAtFlip(flipPos, treasureDir, visited, startC)
-	if not flipPos or not treasureDir then return false end
-	visited = visited or {}
-	local hit = compassFindSpawnerNearFlip(flipPos, treasureDir)
-	if hit and hit.sp and not visited[hit.sp] then
-		diagLog("compass", string.format("flip spawner '%s' dist~0", hit.tree))
-		DIAG.lastCompassHop = string.format("flip %s", hit.tree)
-		visited[hit.sp] = true
-		compassHoldTool()
-		compassTpStandOn(hit.sp, hit.tree)
-		task.wait(COMPASS.POST_TP_WAIT or 0.35)
-		if compassWaitHarvest(hit.sp, startC) then return true end
-	end
-	local groundY = hit and hit.y or (flipPos.Y - (COMPASS.FLY_ALT or 120))
-	local groundOrigin = Vector3.new(flipPos.X, groundY, flipPos.Z)
-	local line = compassBuildLine(groundOrigin, treasureDir, groundY)
-	table.sort(line, function(a, b)
-		local da = (a.entry.x - flipPos.X) ^ 2 + (a.entry.z - flipPos.Z) ^ 2
-		local db = (b.entry.x - flipPos.X) ^ 2 + (b.entry.z - flipPos.Z) ^ 2
-		return da < db
-	end)
-	for _, r in ipairs(line) do
-		if not getgenv().__SIGMA_COMPASS_FIND or samCountCompassTool() < startC then
-			return samCountCompassTool() < startC
-		end
-		if visited[r.entry.sp] then continue end
-		visited[r.entry.sp] = true
-		DIAG.lastCompassHop = string.format("drop %s@%.0fm", r.entry.tree, r.along)
-		diagLog("compass", "drop hunt " .. DIAG.lastCompassHop)
-		compassHoldTool()
-		compassTpStandOn(r.entry.sp, r.entry.tree)
-		task.wait(COMPASS.POST_TP_WAIT or 0.35)
-		if compassWaitHarvest(r.entry.sp, startC) then return true end
-	end
-	return samCountCompassTool() < startC
-end
-
-function compassHuntGroundLoop(startC, visited)
-	visited = visited or {}
-	local hops, stallTries = 0, 0
-	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
-		if hubModeBlocks("compass_find") then break end
-		hops += 1
-		local hrp = getHRP()
-		local origin = hrp and hrp.Position
-		if not origin then break end
-		local row, needle = compassPickNextOnNeedle(origin, visited)
-		if not row then
-			stallTries += 1
-			if stallTries >= 3 then
-				DIAG.lastCompassFail = "no_target"
-				break
-			end
-			if needle then
-				diagLog("compass", "no spawner on needle ray — step forward")
-				compassStepAlongNeedle(origin, needle, 24)
-				task.wait(COMPASS.POST_TP_WAIT or 0.35)
-			else
-				task.wait(COMPASS.NEEDLE_POLL or 0.1)
-			end
-			continue
-		end
-		stallTries = 0
-		local e = row.entry
-		visited[e.sp] = true
-		DIAG.lastCompassHop = string.format("%s@%.0fm", e.tree, row.along)
-		diagLog("compass", string.format("needle TP %s perp=%.0f", DIAG.lastCompassHop, row.perp))
-		compassHoldTool()
-		compassTpStandOn(e.sp, e.tree)
-		task.wait(COMPASS.POST_TP_WAIT or 0.35)
-		if compassWaitHarvest(e.sp, startC) then return true end
-		task.wait(COMPASS.NEEDLE_POLL or 0.1)
-	end
-	return samCountCompassTool() < startC
-end
-
 function compassNeedleDir()
 	compassHoldTool()
 	compassKeepNeedleVisible()
@@ -1841,6 +1659,45 @@ function compassWaitHarvest(sp, startC)
 	return samCountCompassTool() < startC
 end
 
+function compassHuntGroundLoop(startC, visited)
+	visited = visited or {}
+	local hops, stallTries = 0, 0
+	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
+		if hubModeBlocks("compass_find") then break end
+		hops += 1
+		local hrp = getHRP()
+		local origin = hrp and hrp.Position
+		if not origin then break end
+		local row, needle = compassPickNextOnNeedle(origin, visited)
+		if not row then
+			stallTries += 1
+			if stallTries >= 3 then
+				DIAG.lastCompassFail = "no_target"
+				break
+			end
+			if needle then
+				diagLog("compass", "no spawner on needle ray — step forward")
+				compassStepAlongNeedle(origin, needle, 24)
+				task.wait(COMPASS.POST_TP_WAIT or 0.35)
+			else
+				task.wait(COMPASS.NEEDLE_POLL or 0.1)
+			end
+			continue
+		end
+		stallTries = 0
+		local e = row.entry
+		visited[e.sp] = true
+		DIAG.lastCompassHop = string.format("%s@%.0fm", e.tree, row.along)
+		diagLog("compass", string.format("needle TP %s perp=%.0f", DIAG.lastCompassHop, row.perp))
+		compassHoldTool()
+		compassTpStandOn(e.sp, e.tree)
+		task.wait(COMPASS.POST_TP_WAIT or 0.35)
+		if compassWaitHarvest(e.sp, startC) then return true end
+		task.wait(COMPASS.NEEDLE_POLL or 0.1)
+	end
+	return samCountCompassTool() < startC
+end
+
 function compassHuntOnce(startC)
 	if not compassLockForHunt() then
 		DIAG.lastCompassFail = "no_lock"
@@ -1857,15 +1714,6 @@ function compassHuntOnce(startC)
 			task.wait(0.08)
 		end
 		local visited = {}
-		if COMPASS.FLY_MODE then
-			local flipPos, treasureDir, picked = compassFlyUntilReverse(startC)
-			if picked then return true end
-			if flipPos and treasureDir then
-				if compassDropHuntAtFlip(flipPos, treasureDir, visited, startC) then
-					return true
-				end
-			end
-		end
 		return compassHuntGroundLoop(startC, visited)
 	end)
 	huntDone()
@@ -6662,15 +6510,6 @@ function SigmaFish.setAutoFindSam(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setCompassFlyMode(on)
-	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.CompassFlyMode = on ~= false
-	getgenv().SigmaFishConfig = cfg
-	COMPASS.FLY_MODE = cfg.CompassFlyMode
-	CFG_HASH = ""
-	applyCfgIfChanged()
-end
-
 function SigmaFish.setAutoSkill(on)
 	local cfg = getgenv().SigmaFishConfig or {}
 	cfg.AutoSkill = on == true
@@ -6807,7 +6646,6 @@ function SigmaFish.applyConfig()
 	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = false end
 	if cfg.AutoDropCompass == nil then cfg.AutoDropCompass = false end
 	if cfg.AutoFindSam == nil then cfg.AutoFindSam = false end
-	if cfg.CompassFlyMode == nil then cfg.CompassFlyMode = true end
 	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
 	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
@@ -6963,18 +6801,16 @@ function SigmaFish.getDiagnostics()
 		lastCompassFail = DIAG.lastCompassFail or "",
 		lastCompassHop = DIAG.lastCompassHop or "",
 		compassFindOn = COMPASS.FIND_ON == true,
-		compassFlyMode = COMPASS.FLY_MODE == true,
 		compassFindRunning = getgenv().__SIGMA_COMPASS_FIND == true,
 		samTripBusy = SAM._tripBusy == true,
 		cooking = STATE.cooking == true,
 		solving = STATE.solving == true,
 		lines = tail,
 		summary = string.format(
-			"uptime %s | heal=%s | compass=%s fly=%s fail=%s hop=%s | trip=%s cook=%s",
+			"uptime %s | heal=%s | compass=%s fail=%s hop=%s | trip=%s cook=%s",
 			string.format("%.0fs", uptime),
 			tostring(DIAG.lastHeal ~= "" and DIAG.lastHeal or "-"),
 			tostring(COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND),
-			tostring(COMPASS.FLY_MODE),
 			tostring(DIAG.lastCompassFail ~= "" and DIAG.lastCompassFail or "-"),
 			tostring(DIAG.lastCompassHop ~= "" and DIAG.lastCompassHop or "-"),
 			tostring(SAM._tripBusy),
@@ -7045,7 +6881,6 @@ do
 	if cfg.AutoClaimSam == nil then cfg.AutoClaimSam = false end
 	if cfg.AutoDropCompass == nil then cfg.AutoDropCompass = false end
 	if cfg.AutoFindSam == nil then cfg.AutoFindSam = false end
-	if cfg.CompassFlyMode == nil then cfg.CompassFlyMode = true end
 	if cfg.AutoSkill == nil then cfg.AutoSkill = false end
 	if cfg.SkillHoldSec == nil then cfg.SkillHoldSec = 0.5 end
 	if cfg.SkillKeys == nil then cfg.SkillKeys = {} end
