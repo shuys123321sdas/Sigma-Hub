@@ -65,6 +65,7 @@ function KyokaUI.build(hub, Fish, opts)
 	end
 	local PRIMARY = opts.primary or Color3.fromRGB(139, 92, 246)
 	local uiOpenAt = os.clock()
+	local HUB_LOGO = "rbxassetid://72126478374399"
 
 	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoFish = cfg.AutoFish == true
@@ -119,7 +120,7 @@ function KyokaUI.build(hub, Fish, opts)
 	local Window = hub:CreateWindow({
 		Title = "Kyoka Hub",
 		Author = "One Piece: Final",
-		Icon = "fish",
+		Icon = HUB_LOGO,
 		Folder = "KyokaHub",
 		Theme = cfg.Theme,
 		Size = UDim2.new(0, 620, 0, 480),
@@ -133,7 +134,7 @@ function KyokaUI.build(hub, Fish, opts)
 			Enabled = true,
 			OnlyMobile = false,
 			Title = "Kyoka Hub",
-			Icon = "fish",
+			Icon = HUB_LOGO,
 			Draggable = true,
 			OnlyIcon = false,
 			Position = UDim2.new(0.5, 0, 0, 48),
