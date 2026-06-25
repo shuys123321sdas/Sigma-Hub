@@ -274,9 +274,10 @@ COMPASS = {
 	NEEDLE_AXIS = "up",
 	NEEDLE_POLL = 0.1,
 	POST_TP_WAIT = 0.35,
-	MIN_STEP_ALONG = 8,
+	MIN_STEP_ALONG = 3,
 	REVERSE_NEEDLE = 0.35,
-	NEEDLE_WARMUP = 1.0,
+	NEEDLE_WARMUP = 0.6,
+	STRICT_NEEDLE = true,
 	_spawnerDB = nil,
 	_huntFailStreak = 0,
 	_findRunId = 0,
@@ -1466,7 +1467,44 @@ function compassWaitForNeedle(maxSec)
 	return nil
 end
 
+function compassNeedleDir()
+	compassHoldTool()
+	compassKeepNeedleVisible()
+	return compassNeedleLook()
+end
+
+function compassPickNextOnNeedle(origin, visited)
+	local needle = compassNeedleDir()
+	if not needle then return nil, nil end
+	local line = compassBuildLine(origin, needle, origin.Y)
+	if #line < 1 then return nil, needle end
+	local minAlong = COMPASS.MIN_STEP_ALONG or 3
+	for _, r in ipairs(line) do
+		if not visited[r.entry.sp] and r.along >= minAlong then
+			return r, needle
+		end
+	end
+	for _, r in ipairs(line) do
+		if not visited[r.entry.sp] then
+			return r, needle
+		end
+	end
+	return nil, needle
+end
+
+function compassStepAlongNeedle(origin, needle, dist)
+	local hrp = getHRP()
+	if not hrp or not origin or not needle then return false end
+	dist = dist or 24
+	local flat = Vector3.new(needle.X * dist, 0, needle.Z * dist)
+	pcall(function() hrp.Anchored = false end)
+	pcall(function() hrp.CFrame = CFrame.new(origin.X + flat.X, origin.Y, origin.Z + flat.Z) end)
+	BRING.zeroVel(hrp)
+	return true
+end
+
 function compassPickForwardNeedle(origin, needle0)
+	if COMPASS.STRICT_NEEDLE then return needle0 end
 	if not needle0 or not origin then return needle0 end
 	local fwd = compassBuildLine(origin, needle0, origin.Y)
 	local back = compassBuildLine(origin, -needle0, origin.Y)
@@ -1603,20 +1641,13 @@ function compassTouchSpawner(sp)
 	end)
 end
 
-function compassWaitHarvest(sp, startC, marchDir, onNeedleReverse)
+function compassWaitHarvest(sp, startC)
 	local perTry = COMPASS.HARVEST_WAIT / COMPASS.HARVEST_TRIES
 	for _ = 1, COMPASS.HARVEST_TRIES do
 		if not getgenv().__SIGMA_COMPASS_FIND or samCountCompassTool() < startC then
 			return samCountCompassTool() < startC
 		end
 		compassHoldTool()
-		if marchDir then
-			local nd = compassReadMarchNeedle(marchDir, true)
-			if nd and not compassNeedleAligned(nd, marchDir) and compassNeedleAligned(nd, -marchDir) then
-				if onNeedleReverse then onNeedleReverse(nd) end
-				return false
-			end
-		end
 		compassTouchSpawner(sp)
 		local hrp = getHRP()
 		if hrp and sp then
@@ -1637,93 +1668,47 @@ function compassHuntOnce(startC)
 		compassClearLock()
 	end
 	local ok, result = pcall(function()
-		for _ = 1, math.ceil((COMPASS.NEEDLE_WARMUP or 1) / 0.1) do
+		local warmupSteps = math.ceil((COMPASS.NEEDLE_WARMUP or 0.6) / 0.08)
+		for _ = 1, warmupSteps do
 			if not getgenv().__SIGMA_COMPASS_FIND then return false end
 			compassHoldTool()
-			task.wait(0.1)
+			task.wait(0.08)
 		end
-		local hrp = getHRP()
-		local origin0 = hrp and hrp.Position
-		if not origin0 then return false end
-		local needle0 = compassWaitForNeedle(3) or compassNeedleLook()
-		if not needle0 then
-			DIAG.lastCompassFail = "no_needle"
-			return false
-		end
-		needle0 = compassPickForwardNeedle(origin0, needle0) or needle0
-		local marchDir = needle0
-		local sessionLine = compassBuildLine(origin0, marchDir, origin0.Y)
-		if #sessionLine < 1 then
-			DIAG.lastCompassFail = "no_line"
-			return false
-		end
-		diagLog("compass", string.format("session line: %d spawners on ray", #sessionLine))
 		local visited, hops = {}, 0
-		local emptyTries = 0
-		local state = { skipFromIdx = math.huge, forceBackIdx = nil }
-		local lastIdx = nil
+		local stallTries = 0
 		while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
 			if hubModeBlocks("compass_find") then break end
 			hops += 1
-			compassKeepNeedleVisible()
 			local hrp = getHRP()
 			local origin = hrp and hrp.Position
 			if not origin then break end
-			local needle = compassReadMarchNeedle(marchDir, true)
-			local rayLine = compassBuildLine(origin, marchDir, origin.Y)
-			if #rayLine == 0 and #sessionLine > 0 then rayLine = sessionLine end
-			if #rayLine == 0 then
-				emptyTries += 1
-				if emptyTries >= 3 then break end
-				task.wait(COMPASS.NEEDLE_POLL or 0.1)
+			local row, needle = compassPickNextOnNeedle(origin, visited)
+			if not row then
+				stallTries += 1
+				if stallTries >= 3 then
+					DIAG.lastCompassFail = "no_target"
+					break
+				end
+				if needle then
+					diagLog("compass", "no spawner on needle ray — step forward")
+					compassStepAlongNeedle(origin, needle, 24)
+					task.wait(COMPASS.POST_TP_WAIT or 0.35)
+				else
+					task.wait(COMPASS.NEEDLE_POLL or 0.1)
+				end
 				continue
 			end
-			emptyTries = 0
-			local row, idx = nil, nil
-			if state.forceBackIdx and sessionLine[state.forceBackIdx] then
-				row = sessionLine[state.forceBackIdx]
-				idx = state.forceBackIdx
-				state.forceBackIdx = nil
-			end
-			if not row then
-				row, idx = compassPickForwardSpawner(rayLine, origin, needle, marchDir, visited, state.skipFromIdx, sessionLine)
-			end
-			if not row and needle and not compassNeedleAligned(needle, marchDir) and compassNeedleAligned(needle, -marchDir) then
-				local backLine = compassBuildLine(origin, -marchDir, origin.Y)
-				for i, r in ipairs(backLine) do
-					if not visited[r.entry.sp] then
-						row = r
-						idx = compassIndexOnLine(sessionLine, r.entry.sp) or i
-						break
-					end
-				end
-			end
-			if not row then
-				row, idx = compassPickBacktrackSpawner(sessionLine, lastIdx or #sessionLine, visited)
-			end
-			if not row then break end
+			stallTries = 0
 			local e = row.entry
 			visited[e.sp] = true
-			lastIdx = idx or lastIdx
-			DIAG.lastCompassHop = string.format("#%s %s@%.0fm", tostring(idx or "?"), e.tree, row.along)
-			diagLog("compass", string.format("TP %s perp=%.0f", DIAG.lastCompassHop, row.perp))
+			DIAG.lastCompassHop = string.format("%s@%.0fm", e.tree, row.along)
+			diagLog("compass", string.format("needle TP %s perp=%.0f", DIAG.lastCompassHop, row.perp))
 			compassHoldTool()
 			compassTpStandOn(e.sp, e.tree)
-			local _, revAfterTp = compassPollNeedle(marchDir, COMPASS.POST_TP_WAIT)
-			if revAfterTp then
-				compassHandleNeedleReverse(idx or lastIdx or 1, sessionLine, visited, state)
-				task.wait(COMPASS.NEEDLE_POLL or 0.1)
-				continue
-			end
-			local harvestReverse = false
-			if compassWaitHarvest(e.sp, startC, marchDir, function()
-				harvestReverse = true
-			end) then
+			task.wait(COMPASS.POST_TP_WAIT or 0.35)
+			if compassWaitHarvest(e.sp, startC) then
 				diagLog("compass", "picked up treasure")
 				return true
-			end
-			if harvestReverse then
-				compassHandleNeedleReverse(idx or lastIdx or 1, sessionLine, visited, state)
 			end
 			task.wait(COMPASS.NEEDLE_POLL or 0.1)
 		end
