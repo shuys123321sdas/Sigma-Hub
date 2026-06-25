@@ -174,45 +174,6 @@ function SigmaUI.build(hub, Fish, opts)
 	end
 	getgenv().SigmaApplyUiHideName = applyUiHideName
 
-	local uiFirstMinimizeDone = false
-
-	local function applyUiAppearance(c)
-		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
-		if hub.ToggleAcrylic then
-			pcall(function() hub:ToggleAcrylic(c.UiAcrylic ~= false) end)
-		end
-		if Window.SetPanelBackground then
-			pcall(function() Window:SetPanelBackground(c.UiPanelBackground == true) end)
-		end
-	end
-	getgenv().SigmaApplyUiAppearance = applyUiAppearance
-
-	local function tryFirstLoadMinimize(c)
-		if uiFirstMinimizeDone then return end
-		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
-		if c.HideUiFirstLoad ~= true then return end
-		if not Window or not Window.Close then return end
-		task.defer(function()
-			task.wait(0.4)
-			if uiFirstMinimizeDone then return end
-			if not Window or Window.Destroyed or not Window.Close then return end
-			if Window.Closed then
-				uiFirstMinimizeDone = true
-				return
-			end
-			pcall(function() Window:Close() end)
-			uiFirstMinimizeDone = true
-		end)
-	end
-	getgenv().SigmaTryFirstLoadMinimize = tryFirstLoadMinimize
-
-	local configFile
-	local syncConfigFromUi
-	local applyConfigToUi
-	local normalizeSigmaConfig
-	local collectConfigFromUi
-	local readConfigSnapshotFromFile
-
 	local function copyConfigTable(src)
 		local out = {}
 		if type(src) ~= "table" then return out end
@@ -228,7 +189,7 @@ function SigmaUI.build(hub, Fish, opts)
 		return out
 	end
 
-	normalizeSigmaConfig = function(raw)
+	local function normalizeSigmaConfig(raw)
 		local base = getgenv().SigmaFishConfig or {}
 		local c = copyConfigTable(type(raw) == "table" and raw or base)
 		c.AutoFish = c.AutoFish == true
@@ -264,6 +225,44 @@ function SigmaUI.build(hub, Fish, opts)
 		c.UiPanelBackground = c.UiPanelBackground == true
 		return c
 	end
+
+	local uiFirstMinimizeDone = false
+
+	local function applyUiAppearance(c)
+		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
+		if hub.ToggleAcrylic then
+			pcall(function() hub:ToggleAcrylic(c.UiAcrylic ~= false) end)
+		end
+		if Window.SetPanelBackground then
+			pcall(function() Window:SetPanelBackground(c.UiPanelBackground == true) end)
+		end
+	end
+	getgenv().SigmaApplyUiAppearance = applyUiAppearance
+
+	local function tryFirstLoadMinimize(c)
+		if uiFirstMinimizeDone then return end
+		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
+		if c.HideUiFirstLoad ~= true then return end
+		if not Window or not Window.Close then return end
+		task.defer(function()
+			task.wait(0.4)
+			if uiFirstMinimizeDone then return end
+			if not Window or Window.Destroyed or not Window.Close then return end
+			if Window.Closed then
+				uiFirstMinimizeDone = true
+				return
+			end
+			pcall(function() Window:Close() end)
+			uiFirstMinimizeDone = true
+		end)
+	end
+	getgenv().SigmaTryFirstLoadMinimize = tryFirstLoadMinimize
+
+	local configFile
+	local syncConfigFromUi
+	local applyConfigToUi
+	local collectConfigFromUi
+	local readConfigSnapshotFromFile
 
 	local ELEMENT_FLAG_KEYS = {
 		Sigma_AutoFish = "AutoFish",
