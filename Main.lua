@@ -775,10 +775,10 @@ function samWithReturnTrip(samModel, workFn)
 	local ok = false
 	local tripErr = nil
 	local function finishTrip()
-		if hubFeaturesReady() and savedCF then
+		if playerAlive() and hubFeaturesReady() and savedCF then
 			samRestoreCF(savedCF)
 		end
-		if hubFeaturesReady() then
+		if playerAlive() and hubFeaturesReady() then
 			dropSelectedCacheInPlace()
 			if FISH.ON and findRod() then
 				equipBestRodNow()
@@ -794,6 +794,7 @@ function samWithReturnTrip(samModel, workFn)
 		else
 			ok = true
 		end
+		if not playerAlive() then ok = false end
 	end)
 	if not ran then
 		tripErr = err
@@ -1872,7 +1873,11 @@ function attackLoopOnMob(mob, mode)
 	ensureCombatReady()
 	tpNearMob(mob, true)
 	local lastHp, stallAt = hum.Health, os.clock()
-	while isActive() and questMobKillEnabled() and questModeOk(mode) do
+	while isActive()
+		and playerAlive()
+		and hubFeaturesReady()
+		and questMobKillEnabled()
+		and questModeOk(mode) do
 		hum = mob:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then return true end
 		local mobRoot = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChildWhichIsA("BasePart", true)
@@ -1904,7 +1909,10 @@ function attackBurstOnMob(mob, mode)
 	if not hum or hum.Health <= 0 then return true end
 	setQuestMobKill(true)
 	local aliveFn = function()
-		return questMobKillEnabled() and questModeOk(mode)
+		return playerAlive()
+			and hubFeaturesReady()
+			and questMobKillEnabled()
+			and questModeOk(mode)
 	end
 	ensureCombatReady()
 	startM1Loop(aliveFn, mob)
@@ -3508,6 +3516,19 @@ function resetSpawnBlock()
 	clearSamTripState()
 end
 
+function stopCombatLoops()
+	stopM1Loop()
+	setQuestMobKill(false)
+end
+
+function clearSpawnGraceIfMidGame()
+	if spawnOpen() then return end
+	if not playerAlive() then return end
+	if not getData() then return end
+	if not (workspace:FindFirstChild("Alive") or workspace:FindFirstChild("MapFolder")) then return end
+	STATE.spawnGraceUntil = 0
+end
+
 function markSpawnGrace(extra)
 	STATE.spawnGraceUntil = os.clock() + (HUB.SPAWN_GRACE or 0.55) + (extra or 0)
 end
@@ -3553,6 +3574,7 @@ function bindCharacterSpawnGuard(char)
 	if hum then
 		pcall(function()
 			hum.Died:Connect(function()
+				stopCombatLoops()
 				clearSamTripState()
 				resetSpawnBlock()
 			end)
@@ -3586,6 +3608,31 @@ function ensureSpawn()
 		if cam then cam.CameraType = Enum.CameraType.Track end
 	end)
 	markSpawnGrace(0.1)
+	return true
+end
+
+function tryAutoRespawn()
+	if HUB.AUTO_SPAWN == false then return false end
+	if playerAlive() then return false end
+	if spawnOpen() then
+		return ensureSpawn()
+	end
+	local pg = player and player:FindFirstChild("PlayerGui")
+	local load = pg and pg:FindFirstChild("Load")
+	if load and load:IsA("ScreenGui") then
+		if not load.Enabled then
+			pcall(function() load.Enabled = true end)
+		end
+		if spawnOpen() then
+			return ensureSpawn()
+		end
+	end
+	local now = os.clock()
+	if STATE.spawnAt and now - STATE.spawnAt < (HUB.SPAWN_COOLDOWN or 1.25) then
+		return false
+	end
+	STATE.spawnAt = now
+	pcall(function() exec("Load", { "Load" }) end)
 	return true
 end
 
@@ -5628,14 +5675,19 @@ function hubTick()
 	syncCfg()
 	if not isActive() then return end
 	if spawnOpen() then
+		stopCombatLoops()
 		clearSamTripState()
 		if HUB.AUTO_SPAWN then ensureSpawn() end
 		return
 	end
 	if not playerAlive() then
+		stopCombatLoops()
 		clearSamTripState()
+		resetSpawnBlock()
+		if HUB.AUTO_SPAWN then tryAutoRespawn() end
 		return
 	end
+	clearSpawnGraceIfMidGame()
 	if not hubFeaturesReady() then return end
 	stepHideName()
 	if REJOIN.ON then stepWhitelistKick() end
