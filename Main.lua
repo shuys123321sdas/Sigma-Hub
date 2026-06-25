@@ -46,7 +46,8 @@ HUB = {
 	ANTI_AFK = true,
 	ANTI_AFK_JUMP = 180,
 	LOOP_DELAY = 0.35,
-	SPAWN_COOLDOWN = 10,
+	SPAWN_COOLDOWN = 1.25,
+	SPAWN_GRACE = 0.55,
 	HIDE_NAME = true,
 	HIDE_NAME_LABEL = "Sigma Hub",
 	REAL_NAME = nil,
@@ -116,7 +117,7 @@ STATE = {
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
-	collectSweep = nil, spawnAt = 0,
+	collectSweep = nil, spawnAt = 0, spawnGraceUntil = 0,
 	hakiFastRunning = false,
 	hakiWasFull = false,
 	hakiHoldCF = nil,
@@ -163,7 +164,7 @@ QUEST = {
 	COLLECT_WAIT = 0.12,
 	COLLECT_TP_UP = 2,
 	CARRY_SWEEP_WAIT = 0.35,
-	ATTACK_RANGE = 5,
+	ATTACK_RANGE = 3,
 	ATTACK_CD = 0.15,
 	MOB_TP_Y = 1,
 	MOB_RET_TP_DIST = 7,
@@ -762,22 +763,43 @@ function dropSelectedCacheInPlace()
 	return true
 end
 
+function clearSamTripState()
+	SAM._tripBusy = false
+end
+
 function samWithReturnTrip(samModel, workFn)
 	if SAM._tripBusy then return false end
+	if not hubFeaturesReady() then return false end
 	SAM._tripBusy = true
 	local savedCF = samGetReturnCF()
-	samUnequipAllTools()
-	if samModel then tpNear(samModel) end
-	local ok = true
-	if type(workFn) == "function" then
-		ok = workFn() ~= false
+	local ok = false
+	local tripErr = nil
+	local function finishTrip()
+		if hubFeaturesReady() and savedCF then
+			samRestoreCF(savedCF)
+		end
+		if hubFeaturesReady() then
+			dropSelectedCacheInPlace()
+			if FISH.ON and findRod() then
+				equipBestRodNow()
+			end
+		end
+		clearSamTripState()
 	end
-	samRestoreCF(savedCF)
-	dropSelectedCacheInPlace()
-	if FISH.ON and findRod() then
-		equipBestRodNow()
+	local ran, err = pcall(function()
+		samUnequipAllTools()
+		if samModel then tpNear(samModel) end
+		if type(workFn) == "function" then
+			ok = workFn() ~= false
+		else
+			ok = true
+		end
+	end)
+	if not ran then
+		tripErr = err
 	end
-	SAM._tripBusy = false
+	finishTrip()
+	if tripErr then return false end
 	return ok
 end
 
@@ -848,6 +870,7 @@ end
 
 function stepSam()
 	if not SAM.ON then return false end
+	if not hubFeaturesReady() then return false end
 	if SAM._tripBusy then return true end
 	if samClaimCompass() then return true end
 	local q = getQuests()
@@ -1151,7 +1174,7 @@ function refreshCompassFindLoop()
 		compassBeginNoclip()
 		task.spawn(function()
 			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
-				if not worldReady() then
+				if not hubFeaturesReady() then
 					task.wait(0.35)
 					continue
 				end
@@ -1162,7 +1185,7 @@ function refreshCompassFindLoop()
 		end)
 		task.spawn(function()
 			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
-				if not worldReady() then
+				if not hubFeaturesReady() then
 					task.wait(0.35)
 					continue
 				end
@@ -1187,6 +1210,7 @@ function compassModeEnabled()
 end
 
 function stepCompassFeatures()
+	if not hubFeaturesReady() then return false end
 	if SAM.ON and stepSam() then return true end
 	if COMPASS.DROP_ON and stepCompassDrop() then return true end
 	return false
@@ -2935,7 +2959,7 @@ end
 
 function stepMiscConsumables()
 	if not CACHE.AUTO_CONSUME then return false end
-	if not isActive() then return false end
+	if not hubFeaturesReady() then return false end
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if not hum then return false end
 	local tools = collectMiscConsumables()
@@ -2956,7 +2980,7 @@ function startConsumeLoop()
 	local run = CACHE._consumeRunId
 	task.spawn(function()
 		while getgenv().__SIGMA_HUB_RUNNING and CACHE._consumeRunId == run do
-			if CACHE.AUTO_CONSUME and isActive() then
+			if CACHE.AUTO_CONSUME and hubFeaturesReady() then
 				pcall(stepMiscConsumables)
 			end
 			task.wait(CACHE.CONSUME_TICK or 0.03)
@@ -3470,10 +3494,76 @@ function spawnOpen()
 	return load and load:IsA("ScreenGui") and load.Enabled
 end
 
+function playerAlive()
+	if not player then return false end
+	local char = player.Character
+	if not char then return false end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return false end
+	return getHRP() ~= nil
+end
+
+function resetSpawnBlock()
+	STATE.spawnAt = 0
+	clearSamTripState()
+end
+
+function markSpawnGrace(extra)
+	STATE.spawnGraceUntil = os.clock() + (HUB.SPAWN_GRACE or 0.55) + (extra or 0)
+end
+
+function hookSpawnLoadGui(load)
+	if not load or load.Name ~= "Load" or not load:IsA("ScreenGui") then return end
+	if load:GetAttribute("__SIGMA_SPAWN_HOOK") then return end
+	load:SetAttribute("__SIGMA_SPAWN_HOOK", true)
+	pcall(function()
+		load:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if load.Enabled then
+				resetSpawnBlock()
+				markSpawnGrace(0)
+			end
+		end)
+	end)
+	if load.Enabled then resetSpawnBlock() end
+end
+
+function setupSpawnWatch()
+	if getgenv().__SIGMA_SPAWN_WATCH then return end
+	getgenv().__SIGMA_SPAWN_WATCH = true
+	local function watchPg(pg)
+		if not pg then return end
+		hookSpawnLoadGui(pg:FindFirstChild("Load"))
+		pg.ChildAdded:Connect(function(ch)
+			if ch.Name == "Load" then hookSpawnLoadGui(ch) end
+		end)
+	end
+	watchPg(player and player:FindFirstChild("PlayerGui"))
+	if player then
+		player.ChildAdded:Connect(function(ch)
+			if ch.Name == "PlayerGui" then watchPg(ch) end
+		end)
+	end
+end
+
+function bindCharacterSpawnGuard(char)
+	if not char then return end
+	clearSamTripState()
+	markSpawnGrace(0.05)
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		pcall(function()
+			hum.Died:Connect(function()
+				clearSamTripState()
+				resetSpawnBlock()
+			end)
+		end)
+	end
+end
+
 function ensureSpawn()
 	if HUB.AUTO_SPAWN == false then return false end
 	if not spawnOpen() then return false end
-	if worldReady() and getData() then
+	if worldReady() then
 		pcall(function()
 			local pg = player and player:FindFirstChild("PlayerGui")
 			local load = pg and pg:FindFirstChild("Load")
@@ -3482,7 +3572,7 @@ function ensureSpawn()
 		return false
 	end
 	local now = os.clock()
-	if STATE.spawnAt and now - STATE.spawnAt < HUB.SPAWN_COOLDOWN then
+	if STATE.spawnAt and now - STATE.spawnAt < (HUB.SPAWN_COOLDOWN or 1.25) then
 		return true
 	end
 	STATE.spawnAt = now
@@ -3495,6 +3585,7 @@ function ensureSpawn()
 		local cam = workspace.CurrentCamera
 		if cam then cam.CameraType = Enum.CameraType.Track end
 	end)
+	markSpawnGrace(0.1)
 	return true
 end
 
@@ -3557,7 +3648,10 @@ function worldReady()
 end
 
 function hubFeaturesReady()
-	return isActive() and worldReady()
+	if not isActive() then return false end
+	if spawnOpen() then return false end
+	if os.clock() < (STATE.spawnGraceUntil or 0) then return false end
+	return worldReady()
 end
 
 function syncCfg()
@@ -5509,11 +5603,13 @@ function setupWhitelistGuard()
 end
 
 function serviceTick()
+	if not hubFeaturesReady() then return end
 	dropGrappleTools()
 	stepCacheFeatures()
 end
 
 function featureTick()
+	if not hubFeaturesReady() then return end
 	if not hubRunning() then return end
 	if stepCompassFeatures() then return end
 	stepHakiFeatures()
@@ -5532,10 +5628,15 @@ function hubTick()
 	syncCfg()
 	if not isActive() then return end
 	if spawnOpen() then
+		clearSamTripState()
 		if HUB.AUTO_SPAWN then ensureSpawn() end
 		return
 	end
-	if not worldReady() then return end
+	if not playerAlive() then
+		clearSamTripState()
+		return
+	end
+	if not hubFeaturesReady() then return end
 	stepHideName()
 	if REJOIN.ON then stepWhitelistKick() end
 	serviceTick()
@@ -5554,9 +5655,11 @@ function startHubLoop()
 	setupAntiAfk()
 	setupGrappleCleaner()
 	setupWhitelistGuard()
+	setupSpawnWatch()
 	startConsumeLoop()
 	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
-		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function()
+		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function(char)
+			bindCharacterSpawnGuard(char)
 			STATE.hakiFastPending = false
 			STATE.hakiFastRunning = false
 			STATE.hakiWasFull = false
@@ -5569,6 +5672,9 @@ function startHubLoop()
 				patchGuiNames(true)
 			end
 		end)
+	end
+	if player and player.Character then
+		bindCharacterSpawnGuard(player.Character)
 	end
 	task.spawn(function()
 		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
