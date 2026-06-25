@@ -264,18 +264,24 @@ COMPASS = {
 	REVERSE = true,
 	MAX_RAY = 80,
 	MAX_HOPS = 80,
-	HARVEST_WAIT = 0.3,
-	HARVEST_TRIES = 2,
+	HARVEST_WAIT = 0.45,
+	HARVEST_TRIES = 3,
 	CLICK_INTERVAL = 0.06,
 	FAIL_RETRY = 0.5,
 	LOOP_DELAY = 0.45,
 	TP_UP = 0.5,
 	WATER_Y = 80,
 	NEEDLE_AXIS = "up",
+	NEEDLE_POLL = 0.1,
+	POST_TP_WAIT = 0.35,
+	MIN_STEP_ALONG = 8,
+	REVERSE_NEEDLE = 0.35,
+	NEEDLE_WARMUP = 1.0,
 	_spawnerDB = nil,
 	_huntFailStreak = 0,
 	_findRunId = 0,
 	_mouseHeld = false,
+	_lock = { tool = nil, slot = nil, snapshot = {} },
 	_noclip = { active = false, saved = {}, conns = {} },
 }
 
@@ -359,6 +365,7 @@ DIAG = {
 	lines = {},
 	lastHeal = "",
 	lastCompassFail = "",
+	lastCompassHop = "",
 	uptimeAt = os.clock(),
 }
 WATCHDOG = { INTERVAL = 90, runId = 0 }
@@ -430,6 +437,7 @@ end
 function hubOnCharacterDied()
 	stopCombatLoops()
 	clearSamTripState()
+	compassClearLock()
 	compassReleaseMouse()
 	compassEndNoclip()
 	COMPASS._noclip.saved = {}
@@ -1246,9 +1254,96 @@ function compassSendMouse(down)
 	end
 end
 
+function compassIsCompassTool(tool)
+	return tool and tool:IsA("Tool") and cacheToolIsType(tool.Name, "Compass")
+end
+
+function compassSnapshotTools()
+	return collectToolsByCacheType("Compass")
+end
+
+function compassClearLock()
+	COMPASS._lock.tool = nil
+	COMPASS._lock.slot = nil
+	COMPASS._lock.snapshot = {}
+end
+
+function compassResolveLocked()
+	local lock = COMPASS._lock
+	if lock.tool and lock.tool.Parent and compassIsCompassTool(lock.tool) then
+		return lock.tool
+	end
+	for _, t in ipairs(lock.snapshot or {}) do
+		if t.Parent and compassIsCompassTool(t) then
+			lock.tool = t
+			return t
+		end
+	end
+	if lock.slot then
+		local snap = compassSnapshotTools()
+		if snap[lock.slot] then
+			lock.tool = snap[lock.slot]
+			return lock.tool
+		end
+	end
+	return nil
+end
+
+function compassLockForHunt()
+	local snap = compassSnapshotTools()
+	COMPASS._lock.snapshot = snap
+	COMPASS._lock.tool = nil
+	COMPASS._lock.slot = nil
+	local char = player.Character
+	local equipped = char and char:FindFirstChildWhichIsA("Tool")
+	if equipped and compassIsCompassTool(equipped) then
+		COMPASS._lock.tool = equipped
+		for i, t in ipairs(snap) do
+			if t == equipped then COMPASS._lock.slot = i break end
+		end
+	else
+		COMPASS._lock.slot = 1
+		COMPASS._lock.tool = snap[1]
+	end
+	return COMPASS._lock.tool
+end
+
+function compassStripForeignTools()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	local char = player.Character
+	local locked = compassResolveLocked()
+	if not hum or not char or not locked then return false end
+	local foreign = nil
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") and t ~= locked then foreign = t break end
+	end
+	if not foreign then return false end
+	pcall(function() hum:UnequipTools() end)
+	task.wait(0.05)
+	if locked.Parent ~= char then
+		pcall(function() hum:EquipTool(locked) end)
+		task.wait(0.05)
+	end
+	return true
+end
+
+function compassEnsureLocked()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return nil end
+	local tool = compassResolveLocked()
+	if not tool then return nil end
+	compassStripForeignTools()
+	local char = player.Character
+	if char and tool.Parent ~= char then
+		pcall(function() hum:EquipTool(tool) end)
+		task.wait(0.06)
+	end
+	return compassResolveLocked()
+end
+
 function compassEquipOnly()
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	local tool = samNextCompassTool()
+	local tool = compassResolveLocked() or samNextCompassTool()
 	if not tool or not hum then return false end
 	if tool.Parent ~= player.Character then
 		pcall(function() hum:EquipTool(tool) end)
@@ -1259,7 +1354,7 @@ end
 
 function compassHoldTool()
 	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	local tool = samNextCompassTool()
+	local tool = compassEnsureLocked() or samNextCompassTool()
 	if not tool or not hum then return false end
 	if tool.Parent ~= player.Character then
 		pcall(function() hum:EquipTool(tool) end)
@@ -1287,8 +1382,9 @@ function compassFlatUnit(v)
 end
 
 function compassNeedlePart()
-	local tool = samNextCompassTool() or (player.Character and player.Character:FindFirstChild("Compass"))
-	if not tool then return nil end
+	local tool = compassResolveLocked() or samNextCompassTool()
+		or (player.Character and player.Character:FindFirstChildWhichIsA("Tool"))
+	if not tool or not compassIsCompassTool(tool) then return nil end
 	local n = tool:FindFirstChild("CompassNeedle") or tool:FindFirstChild("Needle")
 	if n then return n end
 	for _, d in ipairs(tool:GetDescendants()) do
@@ -1299,19 +1395,135 @@ function compassNeedlePart()
 	return nil
 end
 
-function compassNeedleLook()
-	local n = compassNeedlePart()
+function compassNeedleFromPart(n, applyReverse)
 	if not n then return nil end
 	local ok, raw = pcall(function()
 		if COMPASS.NEEDLE_AXIS == "up" then return n.CFrame.UpVector end
 		if COMPASS.NEEDLE_AXIS == "-up" then return -n.CFrame.UpVector end
 		if COMPASS.NEEDLE_AXIS == "look" then return n.CFrame.LookVector end
+		if COMPASS.NEEDLE_AXIS == "-look" then return -n.CFrame.LookVector end
 		return n.CFrame.UpVector
 	end)
 	if not ok or not raw then return nil end
 	local d = compassFlatUnit(raw)
-	if COMPASS.REVERSE and d then d = -d end
+	if applyReverse ~= false and COMPASS.REVERSE and d then d = -d end
 	return d
+end
+
+function compassKeepNeedleVisible()
+	local n = compassNeedlePart()
+	if not n then return end
+	local function show(p)
+		if (p:IsA("BasePart") or p:IsA("Decal")) and p.Transparency >= 1 then
+			p.Transparency = 0
+		end
+	end
+	pcall(show, n)
+	for _, d in ipairs(n:GetDescendants()) do pcall(show, d) end
+end
+
+function compassNeedleLook()
+	return compassNeedleFromPart(compassNeedlePart(), true)
+end
+
+function compassNeedleAligned(needle, dir)
+	if not needle or not dir then return false end
+	return needle:Dot(dir) >= (COMPASS.REVERSE_NEEDLE or 0.35)
+end
+
+function compassReadMarchNeedle(marchDir, wantRaw)
+	compassHoldTool()
+	compassKeepNeedleVisible()
+	local nd = compassNeedleLook() or marchDir
+	if wantRaw then return nd end
+	if marchDir and nd and nd:Dot(marchDir) < 0 then return -nd end
+	return nd
+end
+
+function compassPollNeedle(marchDir, maxSec)
+	local t0 = os.clock()
+	while getgenv().__SIGMA_COMPASS_FIND and os.clock() - t0 < (maxSec or COMPASS.POST_TP_WAIT or 0.35) do
+		local nd = compassReadMarchNeedle(marchDir, true)
+		if nd and marchDir and not compassNeedleAligned(nd, marchDir)
+			and compassNeedleAligned(nd, -marchDir) then
+			return nd, true
+		end
+		task.wait(COMPASS.NEEDLE_POLL or 0.1)
+	end
+	return compassReadMarchNeedle(marchDir, true), false
+end
+
+function compassWaitForNeedle(maxSec)
+	local t0 = os.clock()
+	while getgenv().__SIGMA_COMPASS_FIND and os.clock() - t0 < (maxSec or 3) do
+		compassHoldTool()
+		compassKeepNeedleVisible()
+		local n = compassNeedlePart()
+		local d = compassNeedleFromPart(n, false)
+		if d then return d end
+		task.wait(0.1)
+	end
+	return nil
+end
+
+function compassPickForwardNeedle(origin, needle0)
+	if not needle0 or not origin then return needle0 end
+	local fwd = compassBuildLine(origin, needle0, origin.Y)
+	local back = compassBuildLine(origin, -needle0, origin.Y)
+	local fa = fwd[1] and fwd[1].along or math.huge
+	local ba = back[1] and back[1].along or math.huge
+	if #back > #fwd + 2 or (ba < fa and #back > 0) then
+		diagLog("compass", string.format("auto reverse needle: %d back vs %d fwd", #back, #fwd))
+		return -needle0
+	end
+	return needle0
+end
+
+function compassIndexOnLine(line, sp)
+	for i, r in ipairs(line or {}) do
+		if r.entry.sp == sp then return i end
+	end
+	return nil
+end
+
+function compassPickForwardSpawner(line, origin, needle, marchDir, visited, skipFromIdx, sessionLine)
+	skipFromIdx = skipFromIdx or math.huge
+	for i, r in ipairs(line or {}) do
+		if i > COMPASS.MAX_RAY then break end
+		local sIdx = sessionLine and compassIndexOnLine(sessionLine, r.entry.sp) or i
+		if sIdx >= skipFromIdx then continue end
+		if visited[r.entry.sp] then continue end
+		if r.along < (COMPASS.MIN_STEP_ALONG or 8) then continue end
+		local to = compassFlatUnit(Vector3.new(r.entry.x - origin.X, 0, r.entry.z - origin.Z))
+		if not to or to:Dot(marchDir) < 0.12 then continue end
+		if needle and not compassNeedleAligned(needle, marchDir) then continue end
+		return r, sIdx
+	end
+	return nil, nil
+end
+
+function compassPickBacktrackSpawner(sessionLine, fromIdx, visited)
+	local best, bestI = nil, nil
+	for i = 1, math.min((fromIdx or #sessionLine) - 1, #(sessionLine or {})) do
+		local r = sessionLine[i]
+		if r and not visited[r.entry.sp] then
+			if not best or r.along > best.along then best, bestI = r, i end
+		end
+	end
+	if best then return best, bestI end
+	local backIdx = math.max(1, (fromIdx or 1) - 1)
+	if sessionLine and sessionLine[backIdx] then return sessionLine[backIdx], backIdx end
+	return nil, nil
+end
+
+function compassHandleNeedleReverse(idx, sessionLine, visited, state)
+	local backIdx = math.max(1, (idx or 1) - 1)
+	state.skipFromIdx = (idx or 1) + 1
+	state.forceBackIdx = backIdx
+	local backSp = sessionLine[backIdx] and sessionLine[backIdx].entry.sp
+	if backSp then visited[backSp] = nil end
+	diagLog("compass", string.format("needle reverse -> back #%d skip >= #%d", backIdx, state.skipFromIdx))
+	DIAG.lastCompassFail = "needle_reverse"
 end
 
 function compassBuildSpawnerDB()
@@ -1351,7 +1563,7 @@ function compassBuildLine(origin, needle, refY)
 			candidates[#candidates + 1] = { entry = e, along = along, perp = perp }
 		end
 	end
-	local byXZ, line, seenTree = {}, {}, {}
+	local byXZ, line = {}, {}
 	for _, row in ipairs(candidates) do
 		local key = math.floor(row.entry.x / COMPASS.XZ_CELL) .. "," .. math.floor(row.entry.z / COMPASS.XZ_CELL)
 		local prev = byXZ[key]
@@ -1360,10 +1572,7 @@ function compassBuildLine(origin, needle, refY)
 		end
 	end
 	for _, row in pairs(byXZ) do
-		if not seenTree[row.entry.treeInst] then
-			seenTree[row.entry.treeInst] = true
-			line[#line + 1] = row
-		end
+		line[#line + 1] = row
 	end
 	table.sort(line, function(a, b) return a.along < b.along end)
 	return line
@@ -1376,6 +1585,7 @@ function compassTpStandOn(sp, treeName)
 	local top = (sp.CFrame * CFrame.new(0, sp.Size.Y * 0.5, 0)).Position
 	local hip = hum and hum.HipHeight or 2
 	local y = top.Y + math.max(COMPASS.TP_UP, hip + 0.35)
+	pcall(function() hrp.Anchored = false end)
 	pcall(function() hrp.CFrame = CFrame.new(sp.Position.X, y, sp.Position.Z) end)
 	BRING.zeroVel(hrp)
 	return true
@@ -1393,13 +1603,20 @@ function compassTouchSpawner(sp)
 	end)
 end
 
-function compassWaitHarvest(sp, startC)
+function compassWaitHarvest(sp, startC, marchDir, onNeedleReverse)
 	local perTry = COMPASS.HARVEST_WAIT / COMPASS.HARVEST_TRIES
 	for _ = 1, COMPASS.HARVEST_TRIES do
 		if not getgenv().__SIGMA_COMPASS_FIND or samCountCompassTool() < startC then
 			return samCountCompassTool() < startC
 		end
 		compassHoldTool()
+		if marchDir then
+			local nd = compassReadMarchNeedle(marchDir, true)
+			if nd and not compassNeedleAligned(nd, marchDir) and compassNeedleAligned(nd, -marchDir) then
+				if onNeedleReverse then onNeedleReverse(nd) end
+				return false
+			end
+		end
 		compassTouchSpawner(sp)
 		local hrp = getHRP()
 		if hrp and sp then
@@ -1412,34 +1629,114 @@ function compassWaitHarvest(sp, startC)
 end
 
 function compassHuntOnce(startC)
-	local visited, hops = {}, 0
-	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
-		if hubModeBlocks("compass_find") then break end
-		hops += 1
-		if not compassEquipOnly() then break end
-		local hrp = getHRP()
-		local origin = hrp and hrp.Position
-		if not origin then break end
-		local needle = compassNeedleLook()
-		if not needle then break end
-		local line = compassBuildLine(origin, needle, origin.Y)
-		if #line < 1 then break end
-		local row = nil
-		for i, r in ipairs(line) do
-			if i > COMPASS.MAX_RAY then break end
-			if not visited[r.entry.sp] then row = r break end
-		end
-		if not row then break end
-		visited[row.entry.sp] = true
-		compassHoldTool()
-		compassTpStandOn(row.entry.sp, row.entry.tree)
-		if compassWaitHarvest(row.entry.sp, startC) then
-			compassReleaseMouse()
-			return true
-		end
+	if not compassLockForHunt() then
+		DIAG.lastCompassFail = "no_lock"
+		return false
 	end
+	local function huntDone()
+		compassClearLock()
+	end
+	local ok, result = pcall(function()
+		for _ = 1, math.ceil((COMPASS.NEEDLE_WARMUP or 1) / 0.1) do
+			if not getgenv().__SIGMA_COMPASS_FIND then return false end
+			compassHoldTool()
+			task.wait(0.1)
+		end
+		local hrp = getHRP()
+		local origin0 = hrp and hrp.Position
+		if not origin0 then return false end
+		local needle0 = compassWaitForNeedle(3) or compassNeedleLook()
+		if not needle0 then
+			DIAG.lastCompassFail = "no_needle"
+			return false
+		end
+		needle0 = compassPickForwardNeedle(origin0, needle0) or needle0
+		local marchDir = needle0
+		local sessionLine = compassBuildLine(origin0, marchDir, origin0.Y)
+		if #sessionLine < 1 then
+			DIAG.lastCompassFail = "no_line"
+			return false
+		end
+		diagLog("compass", string.format("session line: %d spawners on ray", #sessionLine))
+		local visited, hops = {}, 0
+		local emptyTries = 0
+		local state = { skipFromIdx = math.huge, forceBackIdx = nil }
+		local lastIdx = nil
+		while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
+			if hubModeBlocks("compass_find") then break end
+			hops += 1
+			compassKeepNeedleVisible()
+			local hrp = getHRP()
+			local origin = hrp and hrp.Position
+			if not origin then break end
+			local needle = compassReadMarchNeedle(marchDir, true)
+			local rayLine = compassBuildLine(origin, marchDir, origin.Y)
+			if #rayLine == 0 and #sessionLine > 0 then rayLine = sessionLine end
+			if #rayLine == 0 then
+				emptyTries += 1
+				if emptyTries >= 3 then break end
+				task.wait(COMPASS.NEEDLE_POLL or 0.1)
+				continue
+			end
+			emptyTries = 0
+			local row, idx = nil, nil
+			if state.forceBackIdx and sessionLine[state.forceBackIdx] then
+				row = sessionLine[state.forceBackIdx]
+				idx = state.forceBackIdx
+				state.forceBackIdx = nil
+			end
+			if not row then
+				row, idx = compassPickForwardSpawner(rayLine, origin, needle, marchDir, visited, state.skipFromIdx, sessionLine)
+			end
+			if not row and needle and not compassNeedleAligned(needle, marchDir) and compassNeedleAligned(needle, -marchDir) then
+				local backLine = compassBuildLine(origin, -marchDir, origin.Y)
+				for i, r in ipairs(backLine) do
+					if not visited[r.entry.sp] then
+						row = r
+						idx = compassIndexOnLine(sessionLine, r.entry.sp) or i
+						break
+					end
+				end
+			end
+			if not row then
+				row, idx = compassPickBacktrackSpawner(sessionLine, lastIdx or #sessionLine, visited)
+			end
+			if not row then break end
+			local e = row.entry
+			visited[e.sp] = true
+			lastIdx = idx or lastIdx
+			DIAG.lastCompassHop = string.format("#%s %s@%.0fm", tostring(idx or "?"), e.tree, row.along)
+			diagLog("compass", string.format("TP %s perp=%.0f", DIAG.lastCompassHop, row.perp))
+			compassHoldTool()
+			compassTpStandOn(e.sp, e.tree)
+			local _, revAfterTp = compassPollNeedle(marchDir, COMPASS.POST_TP_WAIT)
+			if revAfterTp then
+				compassHandleNeedleReverse(idx or lastIdx or 1, sessionLine, visited, state)
+				task.wait(COMPASS.NEEDLE_POLL or 0.1)
+				continue
+			end
+			local harvestReverse = false
+			if compassWaitHarvest(e.sp, startC, marchDir, function()
+				harvestReverse = true
+			end) then
+				diagLog("compass", "picked up treasure")
+				return true
+			end
+			if harvestReverse then
+				compassHandleNeedleReverse(idx or lastIdx or 1, sessionLine, visited, state)
+			end
+			task.wait(COMPASS.NEEDLE_POLL or 0.1)
+		end
+		return false
+	end)
+	huntDone()
 	compassReleaseMouse()
-	return false
+	if not ok then
+		diagLog("compass", "hunt error: " .. tostring(result))
+		DIAG.lastCompassFail = "hunt_error"
+		return false
+	end
+	return result == true
 end
 
 function compassBeginNoclip()
@@ -1476,6 +1773,7 @@ end
 function stopCompassFindLoop()
 	COMPASS._findRunId = (COMPASS._findRunId or 0) + 1
 	getgenv().__SIGMA_COMPASS_FIND = false
+	compassClearLock()
 	compassReleaseMouse()
 	compassEndNoclip()
 end
@@ -1512,40 +1810,15 @@ function refreshCompassFindLoop()
 				continue
 			end
 			local startC = count
-			if not compassEquipOnly() then
-				task.wait(COMPASS.FAIL_RETRY)
-				continue
-			end
-			task.wait(0.12)
-			local needle = compassNeedleLook()
-			if not needle then
-				DIAG.lastCompassFail = "no_needle"
-				diagLog("compass", "no_needle")
-				compassReleaseMouse()
-				COMPASS._huntFailStreak = (COMPASS._huntFailStreak or 0) + 1
-				if COMPASS._huntFailStreak >= 5 then invalidateCompassSpawnerDB() end
-				task.wait(COMPASS.FAIL_RETRY)
-				continue
-			end
-			local hrp = getHRP()
-			local origin = hrp and hrp.Position
-			if not origin then
-				task.wait(COMPASS.FAIL_RETRY)
-				continue
-			end
-			local line = compassBuildLine(origin, needle, origin.Y)
-			if #line < 1 then
-				DIAG.lastCompassFail = "no_line"
-				diagLog("compass", "no_line")
-				compassReleaseMouse()
-				COMPASS._huntFailStreak = (COMPASS._huntFailStreak or 0) + 1
-				if COMPASS._huntFailStreak >= 5 then invalidateCompassSpawnerDB() end
-				task.wait(COMPASS.FAIL_RETRY)
-				continue
-			end
-			COMPASS._huntFailStreak = 0
 			pcall(function() compassHuntOnce(startC) end)
-			task.wait(samCountCompassTool() < startC and 1 or COMPASS.FAIL_RETRY)
+			if samCountCompassTool() < startC then
+				COMPASS._huntFailStreak = 0
+				task.wait(1)
+			else
+				COMPASS._huntFailStreak = (COMPASS._huntFailStreak or 0) + 1
+				if COMPASS._huntFailStreak >= 5 then invalidateCompassSpawnerDB() end
+				task.wait(COMPASS.FAIL_RETRY)
+			end
 			task.wait(COMPASS.LOOP_DELAY)
 		end
 		if COMPASS._findRunId == runId then stopCompassFindLoop() end
@@ -6539,6 +6812,7 @@ function SigmaFish.getDiagnostics()
 		uptimeSec = uptime,
 		lastHeal = DIAG.lastHeal or "",
 		lastCompassFail = DIAG.lastCompassFail or "",
+		lastCompassHop = DIAG.lastCompassHop or "",
 		compassFindOn = COMPASS.FIND_ON == true,
 		compassFindRunning = getgenv().__SIGMA_COMPASS_FIND == true,
 		samTripBusy = SAM._tripBusy == true,
@@ -6546,11 +6820,12 @@ function SigmaFish.getDiagnostics()
 		solving = STATE.solving == true,
 		lines = tail,
 		summary = string.format(
-			"uptime %s | heal=%s | compass=%s fail=%s | trip=%s cook=%s",
+			"uptime %s | heal=%s | compass=%s fail=%s hop=%s | trip=%s cook=%s",
 			string.format("%.0fs", uptime),
 			tostring(DIAG.lastHeal ~= "" and DIAG.lastHeal or "-"),
 			tostring(COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND),
 			tostring(DIAG.lastCompassFail ~= "" and DIAG.lastCompassFail or "-"),
+			tostring(DIAG.lastCompassHop ~= "" and DIAG.lastCompassHop or "-"),
 			tostring(SAM._tripBusy),
 			tostring(STATE.cooking)
 		),
