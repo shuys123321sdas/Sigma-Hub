@@ -174,6 +174,43 @@ function SigmaUI.build(hub, Fish, opts)
 	end
 	getgenv().SigmaApplyUiHideName = applyUiHideName
 
+	local uiFirstMinimizeDone = false
+
+	local function applyUiAppearance(c)
+		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
+		if Window.SetBackgroundTransparency then
+			pcall(function()
+				if c.UiTransparent then
+					Window:SetBackgroundTransparency(c.UiTransparency / 100)
+				else
+					Window:SetBackgroundTransparency(0)
+				end
+			end)
+		elseif Window.ToggleTransparency then
+			pcall(function() Window:ToggleTransparency(c.UiTransparent == true) end)
+		end
+	end
+	getgenv().SigmaApplyUiAppearance = applyUiAppearance
+
+	local function tryFirstLoadMinimize(c)
+		if uiFirstMinimizeDone then return end
+		c = normalizeSigmaConfig(c or getgenv().SigmaFishConfig or cfg)
+		if c.HideUiFirstLoad ~= true then return end
+		if not Window or not Window.Close then return end
+		task.defer(function()
+			task.wait(0.4)
+			if uiFirstMinimizeDone then return end
+			if not Window or Window.Destroyed or not Window.Close then return end
+			if Window.Closed then
+				uiFirstMinimizeDone = true
+				return
+			end
+			pcall(function() Window:Close() end)
+			uiFirstMinimizeDone = true
+		end)
+	end
+	getgenv().SigmaTryFirstLoadMinimize = tryFirstLoadMinimize
+
 	local configFile
 	local syncConfigFromUi
 	local applyConfigToUi
@@ -227,6 +264,9 @@ function SigmaUI.build(hub, Fish, opts)
 		c.SellAt = tonumber(c.SellAt) or 40
 		c.QuestPick = c.QuestPick or {}
 		c.Theme = c.Theme or cfg.Theme or "Sigma"
+		c.HideUiFirstLoad = c.HideUiFirstLoad == true
+		c.UiTransparent = c.UiTransparent == true
+		c.UiTransparency = math.clamp(tonumber(c.UiTransparency) or 55, 0, 95)
 		return c
 	end
 
@@ -429,6 +469,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoWhitelistToggle, rejoinWhitelistInput
 	local cacheCountPara, cacheUseDropdown, cacheDropDropdown
 	local autoCacheDropToggle, autoUseConsumablesToggle, sellAtSlider
+	local hideUiFirstLoadToggle, uiTransparentToggle, uiTransparencySlider
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -1012,6 +1053,49 @@ function SigmaUI.build(hub, Fish, opts)
 			end),
 		})
 
+		hideUiFirstLoadToggle = SettingsTab:Toggle({
+			Title = "Hide UI on First Load",
+			Desc = "Auto minimize window when hub opens",
+			Value = cfg.HideUiFirstLoad == true,
+			Default = false,
+			Flag = "Sigma_HideUiFirstLoad",
+			Callback = uiCallback(function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.HideUiFirstLoad = v == true
+				cfg = getgenv().SigmaFishConfig
+			end),
+		})
+
+		uiTransparentToggle = SettingsTab:Toggle({
+			Title = "See-through UI",
+			Desc = "Transparent window background",
+			Value = cfg.UiTransparent == true,
+			Default = false,
+			Flag = "Sigma_UiTransparent",
+			Callback = uiCallback(function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.UiTransparent = v == true
+				cfg = getgenv().SigmaFishConfig
+				applyUiAppearance(getgenv().SigmaFishConfig)
+			end),
+		})
+
+		uiTransparencySlider = SettingsTab:Slider({
+			Title = "UI Transparency",
+			Desc = "Higher = more see-through (when enabled above)",
+			Value = { Min = 10, Max = 95, Default = cfg.UiTransparency or 55 },
+			Flag = "Sigma_UiTransparency",
+			Callback = uiCallback(function(v)
+				local n = math.clamp(tonumber(v) or 55, 0, 95)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.UiTransparency = n
+				cfg = getgenv().SigmaFishConfig
+				if getgenv().SigmaFishConfig.UiTransparent then
+					applyUiAppearance(getgenv().SigmaFishConfig)
+				end
+			end),
+		})
+
 		SettingsTab:Section({ Title = "Config", Icon = "save", Box = true, BoxBorder = true })
 
 		SettingsTab:Button({
@@ -1139,6 +1223,12 @@ function SigmaUI.build(hub, Fish, opts)
 		if sellAtSlider and sellAtSlider.Set and c.SellAt ~= nil then
 			pcall(function() sellAtSlider:Set(tonumber(c.SellAt) or c.SellAt) end)
 		end
+		setToggle(hideUiFirstLoadToggle, c.HideUiFirstLoad)
+		setToggle(uiTransparentToggle, c.UiTransparent)
+		if uiTransparencySlider and uiTransparencySlider.Set and c.UiTransparency ~= nil then
+			pcall(function() uiTransparencySlider:Set(tonumber(c.UiTransparency) or c.UiTransparency) end)
+		end
+		applyUiAppearance(c)
 	end
 
 	syncConfigFromUi = function(applyBackend)
@@ -1183,6 +1273,16 @@ function SigmaUI.build(hub, Fish, opts)
 			local n = tonumber(sellAtSlider.Value)
 			if n then c.SellAt = n end
 		end
+		if hideUiFirstLoadToggle and hideUiFirstLoadToggle.Value ~= nil then
+			c.HideUiFirstLoad = hideUiFirstLoadToggle.Value == true
+		end
+		if uiTransparentToggle and uiTransparentToggle.Value ~= nil then
+			c.UiTransparent = uiTransparentToggle.Value == true
+		end
+		if uiTransparencySlider and uiTransparencySlider.Value ~= nil then
+			local n = tonumber(uiTransparencySlider.Value)
+			if n then c.UiTransparency = math.clamp(n, 0, 95) end
+		end
 		cfg = c
 		getgenv().SigmaFishConfig = normalizeSigmaConfig(c)
 		if applyBackend then applyBackendFromConfig(getgenv().SigmaFishConfig) end
@@ -1201,6 +1301,7 @@ function SigmaUI.build(hub, Fish, opts)
 		if getgenv().SigmaFishConfig then
 			reinforceLoadedConfig(getgenv().SigmaFishConfig)
 		end
+		tryFirstLoadMinimize(getgenv().SigmaFishConfig or cfg)
 		uiLog(opts, "Config synced")
 	end)
 
@@ -1218,7 +1319,13 @@ function SigmaUI.build(hub, Fish, opts)
 		if Window.SelectTab and MainTab.Index then
 			Window:SelectTab(MainTab.Index)
 		end
+
+		applyUiAppearance(getgenv().SigmaFishConfig or cfg)
+		tryFirstLoadMinimize(getgenv().SigmaFishConfig or cfg)
 	end)
+
+	applyUiAppearance(cfg)
+	tryFirstLoadMinimize(cfg)
 
 	return Window
 end
