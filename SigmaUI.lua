@@ -270,6 +270,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local configFile
 	local syncConfigFromUi
 	local applyConfigToUi
+	local applyBackendFromConfig
 	local collectConfigFromUi
 	local readConfigSnapshotFromFile
 
@@ -336,7 +337,7 @@ function SigmaUI.build(hub, Fish, opts)
 		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = true
 		if applyConfigToUi then applyConfigToUi(c) end
 		getgenv().__SIGMA_SUPPRESS_UI_CALLBACKS = false
-		applyBackendFromConfig(c)
+		if applyBackendFromConfig then applyBackendFromConfig(c) end
 	end
 
 	if Window.ConfigManager then
@@ -381,7 +382,7 @@ function SigmaUI.build(hub, Fish, opts)
 		return false
 	end
 
-	local function applyBackendFromConfig(c)
+	applyBackendFromConfig = function(c)
 		if not c then return end
 		c = normalizeSigmaConfig(c)
 		cfg = c
