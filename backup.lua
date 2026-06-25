@@ -113,7 +113,7 @@ CACHE = {
 	},
 }
 STATE = {
-	pause = false, loopRunning = false, inMini = false, solving = false,
+	pause = false, loopRunning = false, inMini = false, solving = false, solvingSince = nil,
 	fishCount = nil, listeners = false, lastSell = 0, lastDeliver = 0,
 	lastSolveAt = 0, miniTotal = nil, cooking = false, reachIdx = 0,
 	m1RunId = 0, antiAfkRunId = 0, lastGrappleDrop = 0, questRunId = 0,
@@ -273,6 +273,8 @@ COMPASS = {
 	WATER_Y = 80,
 	NEEDLE_AXIS = "up",
 	_spawnerDB = nil,
+	_huntFailStreak = 0,
+	_findRunId = 0,
 	_mouseHeld = false,
 	_noclip = { active = false, saved = {}, conns = {} },
 }
@@ -344,6 +346,314 @@ do
 			COMBAT.RANK[string.lower(name)] = { rank = i, category = cat }
 		end
 	end
+end
+
+HUBMODE = {
+	locks = {},
+	tripSince = nil,
+	cookingSince = nil,
+	dropBusySince = nil,
+}
+DIAG = {
+	maxLines = 100,
+	lines = {},
+	lastHeal = "",
+	lastCompassFail = "",
+	uptimeAt = os.clock(),
+}
+WATCHDOG = { INTERVAL = 90, runId = 0 }
+CFG_HASH = ""
+FISH._hookedRemotes = FISH._hookedRemotes or {}
+HAKI.REJOIN_MIN_INTERVAL = 600
+HAKI.DEBUG_INTERVAL = 0
+
+function diagLog(tag, msg)
+	tag = tostring(tag or "hub")
+	msg = tostring(msg or "")
+	local line = string.format("[%s] %s", tag, msg)
+	DIAG.lines[#DIAG.lines + 1] = line
+	if #DIAG.lines > (DIAG.maxLines or 100) then
+		table.remove(DIAG.lines, 1)
+	end
+end
+
+function hubModeAcquire(name)
+	if not name then return end
+	HUBMODE.locks[name] = (HUBMODE.locks[name] or 0) + 1
+end
+
+function hubModeRelease(name)
+	if not name then return end
+	local n = HUBMODE.locks[name]
+	if not n or n <= 1 then HUBMODE.locks[name] = nil else HUBMODE.locks[name] = n - 1 end
+end
+
+function hubModeLocked(name)
+	return (HUBMODE.locks[name] or 0) > 0
+end
+
+function hubModeBlocks(feature)
+	if spawnOpen() or os.clock() < (STATE.spawnGraceUntil or 0) then return true end
+	if SAM._tripBusy or hubModeLocked("sam_trip") then
+		if feature == "fish" or feature == "cache_drop" or feature == "compass_drop"
+			or feature == "compass_find" or feature == "compass_use" then
+			return true
+		end
+	end
+	if STATE.cooking or hubModeLocked("cooking") then
+		if feature == "fish" or feature == "cache_drop" or feature == "compass_find" then return true end
+	end
+	if COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND then
+		if feature == "compass_drop" or feature == "cache_drop_compass" or feature == "sam_trip" then return true end
+	end
+	if BRING.holdActive and HAKI.FAST then
+		if feature == "fish" or feature == "sam_trip" or feature == "compass_find" then return true end
+	end
+	if STATE.inMini or STATE.solving then
+		if feature == "unequip" or feature == "cache_drop" then return true end
+	end
+	return false
+end
+
+function hubSoftResetRuntimeFlags()
+	STATE.cooking = false
+	STATE.solving = false
+	STATE.inMini = false
+	STATE.loopRunning = false
+	STATE.solvingSince = nil
+	CACHE._dropBusy = false
+	HUBMODE.cookingSince = nil
+	HUBMODE.dropBusySince = nil
+	HUBMODE.locks = {}
+end
+
+function hubOnCharacterDied()
+	stopCombatLoops()
+	clearSamTripState()
+	compassReleaseMouse()
+	compassEndNoclip()
+	COMPASS._noclip.saved = {}
+	if BRING.releaseHold then BRING.releaseHold() end
+	if BRING.releaseAllMobHolds then BRING.releaseAllMobHolds() end
+	BRING._restoreNoclip()
+	BRING.savedCol = {}
+	hubSoftResetRuntimeFlags()
+	diagLog("lifecycle", "character died — runtime reset")
+end
+
+function hubOnCharacterAdded()
+	hubSoftResetRuntimeFlags()
+	COMPASS._noclip.saved = {}
+	invalidateCompassSpawnerDB()
+	markSpawnGrace(0.15)
+	task.defer(function()
+		if not isActive() then return end
+		if COMPASS.FIND_ON then
+			stopCompassFindLoop()
+			task.wait(0.2)
+			refreshCompassFindLoop()
+		end
+		if SKILL.ON then refreshSkillLoop() end
+		if AFFINITY.ON then refreshAffinityLoop() end
+	end)
+end
+
+function invalidateCompassSpawnerDB()
+	COMPASS._spawnerDB = nil
+	COMPASS._huntFailStreak = 0
+end
+
+function pruneMobHolds()
+	for mob in pairs(BRING.mobHolds) do
+		local hum = mob and mob:FindFirstChildOfClass("Humanoid")
+		if not mob or not mob.Parent or not hum or hum.Health <= 0 then
+			BRING.releaseMobHold(mob)
+		end
+	end
+end
+
+function cacheDropTypesFiltered(types, maxPerTick)
+	types = types or {}
+	if COMPASS.FIND_ON then
+		local filtered = {}
+		for _, k in ipairs(types) do
+			if k ~= "Compass" then filtered[#filtered + 1] = k end
+		end
+		types = filtered
+	end
+	if #types < 1 then return false end
+	return cacheDropTypes(types, maxPerTick)
+end
+
+function cfgHash()
+	local cfg = getgenv().SigmaFishConfig or {}
+	local parts = {
+		tostring(cfg.AutoFish), tostring(cfg.AutoCookSell), tostring(cfg.SellAt),
+		tostring(cfg.AutoClaimSam), tostring(cfg.AutoDropCompass), tostring(cfg.AutoFindSam),
+		tostring(cfg.AutoSkill), tostring(cfg.AutoCacheDrop), tostring(cfg.AutoUseConsumables),
+		tostring(cfg.AutoKenbunshoku), tostring(cfg.AutoBusoshoku), tostring(cfg.FastHaki),
+		tostring(cfg.AutoRayleigh), tostring(cfg.AutoAffinity), tostring(cfg.AutoWhitelistRejoin),
+	}
+	return table.concat(parts, "|")
+end
+
+function readCfg()
+	local cfg = getgenv().SigmaFishConfig or {}
+	FISH.ON = cfg.AutoFish == true
+	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
+	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
+	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
+	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
+	HUB.ANTI_AFK = cfg.AntiAfk ~= false
+	HUB.HIDE_NAME = cfg.HideName ~= false
+	SAM.ON = cfg.AutoClaimSam == true
+	COMPASS.FIND_ON = cfg.AutoFindSam == true
+	if COMPASS.FIND_ON then
+		COMPASS.DROP_ON = false
+	else
+		COMPASS.DROP_ON = cfg.AutoDropCompass == true
+	end
+	SKILL.ON = cfg.AutoSkill == true
+	SKILL.HOLD_SEC = tonumber(cfg.SkillHoldSec) or 0.5
+	REJOIN.ON = cfg.AutoWhitelistRejoin == true
+	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables ~= false
+	CACHE.AUTO_DROP = cfg.AutoCacheDrop == true
+	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
+	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
+	HAKI.FAST = cfg.FastHaki == true
+	RAYLEIGH.ON = cfg.AutoRayleigh == true
+	AFFINITY.ON = cfg.AutoAffinity == true
+	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
+	if not STATE.cooking then STATE.pause = false end
+end
+
+function applyCfgSideEffects(prevFind, prevSkill, prevAffinity, prevFast)
+	if not COMPASS.FIND_ON then
+		stopCompassFindLoop()
+	elseif not getgenv().__SIGMA_COMPASS_FIND then
+		refreshCompassFindLoop()
+	end
+	if not SKILL.ON then
+		stopSkillLoop()
+	elseif SKILL.ON and (not prevSkill or not getgenv().__SIGMA_SKILL_LOOP) then
+		refreshSkillLoop()
+	end
+	if not AFFINITY.ON then
+		stopAffinityLoop()
+	elseif AFFINITY.ON and (not prevAffinity or not getgenv().__SIGMA_AFFINITY_LOOP) then
+		refreshAffinityLoop()
+	end
+	if not HAKI.FAST then
+		STATE.hakiFastRunning = false
+		STATE.hakiWasFull = false
+		hakiClearDrainWatch()
+		if hakiReleaseFarm then hakiReleaseFarm() end
+	elseif not prevFast and HAKI.FAST then
+		BRING.ensureHoldLoop()
+	end
+	if not RAYLEIGH.ON then RAYLEIGH._meditateTrack = nil end
+	if not QUEST.EXPERTISE then clearCollectSweep() end
+end
+
+function applyCfgIfChanged()
+	local h = cfgHash()
+	if h == CFG_HASH then return end
+	local prev = CFG_HASH
+	local prevFind = COMPASS.FIND_ON
+	local prevSkill = SKILL.ON
+	local prevAffinity = AFFINITY.ON
+	local prevFast = HAKI.FAST
+	CFG_HASH = h
+	readCfg()
+	applyCfgSideEffects(prevFind, prevSkill, prevAffinity, prevFast)
+end
+
+function setupMapFolderWatch()
+	if getgenv().__SIGMA_MAP_WATCH then return end
+	getgenv().__SIGMA_MAP_WATCH = true
+	local function hook(folder)
+		if not folder or folder:GetAttribute("__SIGMA_MAP_HOOK") then return end
+		folder:SetAttribute("__SIGMA_MAP_HOOK", true)
+		folder.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") and d.Name == "Spawner" then invalidateCompassSpawnerDB() end
+		end)
+		folder.DescendantRemoving:Connect(function(d)
+			if d:IsA("BasePart") and d.Name == "Spawner" then invalidateCompassSpawnerDB() end
+		end)
+	end
+	local mf = workspace:FindFirstChild("MapFolder")
+	if mf then hook(mf) end
+	workspace.ChildAdded:Connect(function(ch)
+		if ch.Name == "MapFolder" then hook(ch) end
+	end)
+end
+
+function watchdogHeal()
+	local now = os.clock()
+	if SAM._tripBusy and HUBMODE.tripSince and now - HUBMODE.tripSince > 30 then
+		clearSamTripState()
+		diagLog("watchdog", "cleared stuck SAM._tripBusy")
+		DIAG.lastHeal = "sam_trip"
+	end
+	if STATE.cooking and HUBMODE.cookingSince and now - HUBMODE.cookingSince > 20 then
+		STATE.cooking = false
+		HUBMODE.cookingSince = nil
+		diagLog("watchdog", "cleared stuck STATE.cooking")
+		DIAG.lastHeal = "cooking"
+	end
+	if CACHE._dropBusy and HUBMODE.dropBusySince and now - HUBMODE.dropBusySince > 15 then
+		CACHE._dropBusy = false
+		HUBMODE.dropBusySince = nil
+		diagLog("watchdog", "cleared stuck CACHE._dropBusy")
+		DIAG.lastHeal = "drop_busy"
+	end
+	if STATE.solving and STATE.solvingSince and now - STATE.solvingSince > 30 then
+		STATE.solving = false
+		STATE.inMini = false
+		STATE.solvingSince = nil
+		diagLog("watchdog", "cleared stuck mini-game solving")
+		DIAG.lastHeal = "solving"
+	end
+	if COMPASS._mouseHeld and not COMPASS.FIND_ON then compassReleaseMouse() end
+	if getgenv().__SIGMA_COMPASS_FIND and not COMPASS.FIND_ON then stopCompassFindLoop() end
+	if COMPASS.FIND_ON and isActive() and not getgenv().__SIGMA_COMPASS_FIND then
+		refreshCompassFindLoop()
+		diagLog("watchdog", "restarted compass find loop")
+		DIAG.lastHeal = "compass_restart"
+	end
+	pruneMobHolds()
+end
+
+function startWatchdog()
+	WATCHDOG.runId = (WATCHDOG.runId or 0) + 1
+	local run = WATCHDOG.runId
+	task.spawn(function()
+		while getgenv().__SIGMA_HUB_RUNNING and WATCHDOG.runId == run do
+			task.wait(WATCHDOG.INTERVAL or 90)
+			if getgenv().__SIGMA_HUB_RUNNING and WATCHDOG.runId == run then
+				pcall(watchdogHeal)
+			end
+		end
+	end)
+end
+
+function teardownHubResources()
+	stopCompassFindLoop()
+	stopSkillLoop()
+	stopConsumeLoop()
+	stopAffinityLoop()
+	disableAntiAfk()
+	WATCHDOG.runId = (WATCHDOG.runId or 0) + 1
+	local hold = getgenv().__SIGMA_BRING_HOLD_CONN
+	if hold then pcall(function() hold:Disconnect() end) getgenv().__SIGMA_BRING_HOLD_CONN = nil end
+	local desc = getgenv().__SIGMA_DESCENDANT_CONN
+	if desc then pcall(function() desc:Disconnect() end) getgenv().__SIGMA_DESCENDANT_CONN = nil end
+	STATE.listeners = false
+	FISH._hookedRemotes = {}
+	if BRING.releaseHold then BRING.releaseHold() end
+	if BRING.releaseAllMobHolds then BRING.releaseAllMobHolds() end
+	compassReleaseMouse()
+	compassEndNoclip()
 end
 
 function isActive()
@@ -765,12 +1075,17 @@ end
 
 function clearSamTripState()
 	SAM._tripBusy = false
+	HUBMODE.tripSince = nil
+	hubModeRelease("sam_trip")
 end
 
 function samWithReturnTrip(samModel, workFn)
 	if SAM._tripBusy then return false end
+	if hubModeBlocks("sam_trip") then return false end
 	if not hubFeaturesReady() then return false end
 	SAM._tripBusy = true
+	HUBMODE.tripSince = os.clock()
+	hubModeAcquire("sam_trip")
 	local savedCF = samGetReturnCF()
 	local ok = false
 	local tripErr = nil
@@ -899,32 +1214,20 @@ function stepSam()
 end
 
 function samCountCompassTool()
-	local n = 0
-	for _, src in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
-		if src then
-			for _, t in ipairs(src:GetChildren()) do
-				if t:IsA("Tool") and t.Name == "Compass" then n += 1 end
-			end
-		end
-	end
-	return n
+	return #collectToolsByCacheType("Compass")
 end
 
 function samNextCompassTool()
-	for _, src in ipairs({ player.Character, player:FindFirstChild("Backpack") }) do
-		if src then
-			for _, t in ipairs(src:GetChildren()) do
-				if t:IsA("Tool") and t.Name == "Compass" then return t end
-			end
-		end
-	end
-	return nil
+	local tools = collectToolsByCacheType("Compass")
+	return tools[1]
 end
 
 function stepCompassDrop()
 	if not COMPASS.DROP_ON then return false end
+	if COMPASS.FIND_ON then return false end
+	if hubModeBlocks("compass_drop") then return false end
 	if not samActionReady("drop", 2) then return false end
-	return cacheDropTypes({ "Compass" }, 5)
+	return cacheDropTypesFiltered({ "Compass" }, 5)
 end
 
 function compassSendMouse(down)
@@ -941,6 +1244,17 @@ function compassSendMouse(down)
 			else VirtualUser:Button1Up(Vector2.zero, cam.CFrame) end
 		end)
 	end
+end
+
+function compassEquipOnly()
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	local tool = samNextCompassTool()
+	if not tool or not hum then return false end
+	if tool.Parent ~= player.Character then
+		pcall(function() hum:EquipTool(tool) end)
+		task.wait(0.06)
+	end
+	return tool.Parent == player.Character
 end
 
 function compassHoldTool()
@@ -1098,24 +1412,18 @@ function compassWaitHarvest(sp, startC)
 end
 
 function compassHuntOnce(startC)
-	if not compassHoldTool() then return false end
-	for _ = 1, 10 do compassHoldTool(); task.wait(0.1) end
-	local hrp = getHRP()
-	local origin = hrp and hrp.Position
-	if not origin then return false end
-	local needle = compassNeedleLook()
-	if not needle then return false end
-	local line = compassBuildLine(origin, needle, origin.Y)
-	if #line < 1 then return false end
 	local visited, hops = {}, 0
 	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
+		if hubModeBlocks("compass_find") then break end
 		hops += 1
-		compassHoldTool()
-		hrp = getHRP()
-		origin = hrp and hrp.Position
+		if not compassEquipOnly() then break end
+		local hrp = getHRP()
+		local origin = hrp and hrp.Position
 		if not origin then break end
-		needle = compassNeedleLook() or needle
-		line = compassBuildLine(origin, needle, origin.Y)
+		local needle = compassNeedleLook()
+		if not needle then break end
+		local line = compassBuildLine(origin, needle, origin.Y)
+		if #line < 1 then break end
 		local row = nil
 		for i, r in ipairs(line) do
 			if i > COMPASS.MAX_RAY then break end
@@ -1123,11 +1431,14 @@ function compassHuntOnce(startC)
 		end
 		if not row then break end
 		visited[row.entry.sp] = true
+		compassHoldTool()
 		compassTpStandOn(row.entry.sp, row.entry.tree)
 		if compassWaitHarvest(row.entry.sp, startC) then
+			compassReleaseMouse()
 			return true
 		end
 	end
+	compassReleaseMouse()
 	return false
 end
 
@@ -1163,47 +1474,82 @@ function compassEndNoclip()
 end
 
 function stopCompassFindLoop()
+	COMPASS._findRunId = (COMPASS._findRunId or 0) + 1
 	getgenv().__SIGMA_COMPASS_FIND = false
 	compassReleaseMouse()
 	compassEndNoclip()
 end
 
 function refreshCompassFindLoop()
-	if COMPASS.FIND_ON and isActive() then
-		if getgenv().__SIGMA_COMPASS_FIND then return end
-		getgenv().__SIGMA_COMPASS_FIND = true
-		compassBeginNoclip()
-		task.spawn(function()
-			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
-				if not hubFeaturesReady() then
-					task.wait(0.35)
-					continue
-				end
-				compassHoldTool()
-				task.wait(COMPASS.CLICK_INTERVAL)
-			end
-			compassReleaseMouse()
-		end)
-		task.spawn(function()
-			while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() do
-				if not hubFeaturesReady() then
-					task.wait(0.35)
-					continue
-				end
-				if samCountCompassTool() < 1 then
-					task.wait(2)
-				else
-					local startC = samCountCompassTool()
-					pcall(function() compassHuntOnce(startC) end)
-					task.wait(samCountCompassTool() < startC and 1 or COMPASS.FAIL_RETRY)
-				end
-				task.wait(COMPASS.LOOP_DELAY)
-			end
-			stopCompassFindLoop()
-		end)
-	else
+	if not (COMPASS.FIND_ON and isActive()) then
 		stopCompassFindLoop()
+		return
 	end
+	if getgenv().__SIGMA_COMPASS_FIND then return end
+	COMPASS._findRunId = (COMPASS._findRunId or 0) + 1
+	local runId = COMPASS._findRunId
+	getgenv().__SIGMA_COMPASS_FIND = true
+	compassBeginNoclip()
+	diagLog("compass", "find loop started")
+	task.spawn(function()
+		while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() and COMPASS._findRunId == runId do
+			if hubModeBlocks("compass_find") then
+				compassReleaseMouse()
+				task.wait(0.35)
+				continue
+			end
+			if not hubFeaturesReady() then
+				compassReleaseMouse()
+				task.wait(0.35)
+				continue
+			end
+			local count = samCountCompassTool()
+			if count < 1 then
+				compassReleaseMouse()
+				DIAG.lastCompassFail = "no_compass"
+				diagLog("compass", "no_compass")
+				task.wait(2)
+				continue
+			end
+			local startC = count
+			if not compassEquipOnly() then
+				task.wait(COMPASS.FAIL_RETRY)
+				continue
+			end
+			task.wait(0.12)
+			local needle = compassNeedleLook()
+			if not needle then
+				DIAG.lastCompassFail = "no_needle"
+				diagLog("compass", "no_needle")
+				compassReleaseMouse()
+				COMPASS._huntFailStreak = (COMPASS._huntFailStreak or 0) + 1
+				if COMPASS._huntFailStreak >= 5 then invalidateCompassSpawnerDB() end
+				task.wait(COMPASS.FAIL_RETRY)
+				continue
+			end
+			local hrp = getHRP()
+			local origin = hrp and hrp.Position
+			if not origin then
+				task.wait(COMPASS.FAIL_RETRY)
+				continue
+			end
+			local line = compassBuildLine(origin, needle, origin.Y)
+			if #line < 1 then
+				DIAG.lastCompassFail = "no_line"
+				diagLog("compass", "no_line")
+				compassReleaseMouse()
+				COMPASS._huntFailStreak = (COMPASS._huntFailStreak or 0) + 1
+				if COMPASS._huntFailStreak >= 5 then invalidateCompassSpawnerDB() end
+				task.wait(COMPASS.FAIL_RETRY)
+				continue
+			end
+			COMPASS._huntFailStreak = 0
+			pcall(function() compassHuntOnce(startC) end)
+			task.wait(samCountCompassTool() < startC and 1 or COMPASS.FAIL_RETRY)
+			task.wait(COMPASS.LOOP_DELAY)
+		end
+		if COMPASS._findRunId == runId then stopCompassFindLoop() end
+	end)
 end
 
 function compassModeEnabled()
@@ -1401,6 +1747,7 @@ end
 
 function fishAllowed()
 	if not FISH.ON then return false end
+	if hubModeBlocks("fish") then return false end
 	if not qHist(FISH.Q_FAVOR) then return false end
 	return true
 end
@@ -2302,6 +2649,7 @@ function solveMini()
 	STATE.lastSolveAt = now
 	STATE.solving = true
 	STATE.inMini = true
+	STATE.solvingSince = os.clock()
 
 	local clickIv = FISH.MINI_CLICK
 	local shuffleWait = FISH.MINI_SHUFFLE
@@ -2313,6 +2661,10 @@ function solveMini()
 		local sawEnabled, sawCounter = false, false
 
 		while isActive() and fishAllowed() do
+			if STATE.solvingSince and os.clock() - STATE.solvingSince > 30 then
+				diagLog("fish", "mini-game solve timeout")
+				break
+			end
 			local gui = pg and pg:FindFirstChild("FishingMinigame")
 			if not gui or not gui.Enabled then
 				if sawEnabled then break end
@@ -2360,6 +2712,7 @@ function solveMini()
 
 		STATE.inMini = false
 		STATE.solving = false
+		STATE.solvingSince = nil
 		STATE.miniTotal = nil
 	end)
 end
@@ -2367,9 +2720,11 @@ end
 function hookListeners()
 	if STATE.listeners then return end
 	STATE.listeners = true
+	FISH._hookedRemotes = FISH._hookedRemotes or {}
 
-	local function listen(r)
+	local function hookRemote(r)
 		if not r then return end
+		if FISH._hookedRemotes[r] then return end
 		local ok, isEv = pcall(function() return r:IsA("RemoteEvent") end)
 		if not ok or not isEv then
 			ok, isEv = pcall(function() return r:IsA("UnreliableRemoteEvent") end)
@@ -2379,17 +2734,25 @@ function hookListeners()
 			pcall(function()
 				r.OnClientEvent:Connect(function(m) pcall(onMiniEvent, m) end)
 			end)
+			FISH._hookedRemotes[r] = true
 		elseif r.Name == "DataEvent" then
 			pcall(function()
 				r.OnClientEvent:Connect(function(_, val, path)
 					if path == "Stats.Fish" and type(val) == "number" then STATE.fishCount = val end
 				end)
 			end)
+			FISH._hookedRemotes[r] = true
 		end
 	end
 
+	local function listen(r)
+		hookRemote(r)
+	end
+
 	for _, d in ipairs(game:GetDescendants()) do listen(d) end
-	game.DescendantAdded:Connect(listen)
+	if not getgenv().__SIGMA_DESCENDANT_CONN then
+		getgenv().__SIGMA_DESCENDANT_CONN = game.DescendantAdded:Connect(listen)
+	end
 
 	task.spawn(function()
 		local pg = player:WaitForChild("PlayerGui", 10)
@@ -2898,22 +3261,26 @@ function cacheDropTypes(types, maxPerTick)
 	if not hum then return false end
 	maxPerTick = maxPerTick or 5
 	CACHE._dropBusy = true
+	HUBMODE.dropBusySince = os.clock()
 	local dropped = 0
 	for _, typeKey in ipairs(types) do
 		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
 			if not isActive() then
 				CACHE._dropBusy = false
+				HUBMODE.dropBusySince = nil
 				finishCacheDropSession(types)
 				return dropped > 0
 			end
 			if dropped >= maxPerTick then
 				CACHE._dropBusy = false
+				HUBMODE.dropBusySince = nil
 				return true
 			end
 			if dropToolInPlace(tool, hum) then dropped += 1 end
 		end
 	end
 	CACHE._dropBusy = false
+	HUBMODE.dropBusySince = nil
 	finishCacheDropSession(types)
 	return dropped > 0
 end
@@ -2925,6 +3292,7 @@ function stepCacheUseSelected()
 	if not hum then return false end
 	local used = false
 	for _, typeKey in ipairs(pick) do
+		if typeKey == "Compass" and (COMPASS.FIND_ON or getgenv().__SIGMA_COMPASS_FIND) then continue end
 		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
 			if not isActive() then return used end
 			useToolClicks(tool, hum, CACHE.USE_CLICKS)
@@ -2936,7 +3304,8 @@ end
 
 function stepCacheDropSelected()
 	if not CACHE.AUTO_DROP then return false end
-	return cacheDropTypes(cacheDropPick(), 5)
+	if hubModeBlocks("cache_drop") then return false end
+	return cacheDropTypesFiltered(cacheDropPick(), 5)
 end
 
 function collectMiscConsumables()
@@ -3365,6 +3734,7 @@ function remoteSell()
 end
 function cookAndSell(force)
 	if STATE.cooking then return false end
+	if hubModeBlocks("fish") and not force then return false end
 	if not force then
 		if not FISH.AUTO_SELL then return false end
 		if countSellable() < FISH.SELL_AT then return false end
@@ -3372,6 +3742,8 @@ function cookAndSell(force)
 	end
 	if countSellable() < 1 and not force then return false end
 
+	hubModeAcquire("cooking")
+	HUBMODE.cookingSince = os.clock()
 	STATE.cooking = true
 	local ok = pcall(function()
 		local stashed = stashQuestFish()
@@ -3385,6 +3757,8 @@ function cookAndSell(force)
 		ensureRodReady()
 	end)
 	STATE.cooking = false
+	HUBMODE.cookingSince = nil
+	hubModeRelease("cooking")
 	STATE.pause = false
 	if ok then STATE.lastSell = os.clock() end
 	return ok
@@ -3394,10 +3768,16 @@ function castLoop()
 	if STATE.loopRunning then return end
 	STATE.loopRunning = true
 	task.spawn(function()
+		local lastActivity = os.clock()
 		while isActive() and fishAllowed() do
+			if hubModeBlocks("fish") then
+				task.wait(0.2)
+				continue
+			end
 			if STATE.cooking then
 				task.wait(0.15)
 			elseif miniOpen() then
+				lastActivity = os.clock()
 				if not STATE.solving then solveMini() end
 				task.wait(0.18)
 			elseif not ensureRodReady() then
@@ -3405,20 +3785,27 @@ function castLoop()
 			else
 				local rod = ensureRodReady()
 				if rod and not lineOut() and not miniOpen() then
+					lastActivity = os.clock()
 					clickRod(rod)
 					waitUntil(function() return lineOut() or miniOpen() end, FISH.CAST_TIMEOUT)
 				elseif lineOut() and not miniOpen() then
 					local before = STATE.fishCount or 0
 					waitUntil(function() return onHook() or miniOpen() or not lineOut() end, FISH.BITE_TIMEOUT)
 					if onHook() and not miniOpen() then
+						lastActivity = os.clock()
 						clickRod(ensureRodReady() or rod)
 						waitUntil(function() return not lineOut() or miniOpen() or (STATE.fishCount or 0) > before end, FISH.REEL_TIMEOUT)
 					elseif lineOut() then
+						lastActivity = os.clock()
 						clickRod(ensureRodReady() or rod)
 						waitUntil(function() return not lineOut() end, FISH.REEL_TIMEOUT)
 					end
 				end
 				task.wait(FISH.LOOP_DELAY)
+			end
+			if os.clock() - lastActivity > 120 then
+				diagLog("fish", "cast loop idle watchdog exit")
+				break
 			end
 		end
 		STATE.loopRunning = false
@@ -3568,14 +3955,13 @@ end
 
 function bindCharacterSpawnGuard(char)
 	if not char then return end
-	clearSamTripState()
+	hubOnCharacterAdded()
 	markSpawnGrace(0.05)
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if hum then
 		pcall(function()
 			hum.Died:Connect(function()
-				stopCombatLoops()
-				clearSamTripState()
+				hubOnCharacterDied()
 				resetSpawnBlock()
 			end)
 		end)
@@ -3702,55 +4088,7 @@ function hubFeaturesReady()
 end
 
 function syncCfg()
-	local cfg = getgenv().SigmaFishConfig or {}
-	FISH.ON = cfg.AutoFish == true
-	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
-	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
-	-- QUEST.AUTO / QUEST.EXPERTISE: chỉ đổi qua setAutoQuest / setAutoExpertise (tránh WindUI config ghi đè)
-	QUEST.PICK = normalizeQuestPick(cfg.QuestPick)
-	HUB.AUTO_SPAWN = cfg.AutoSpawn ~= false
-	HUB.ANTI_AFK = cfg.AntiAfk ~= false
-	HUB.HIDE_NAME = cfg.HideName ~= false
-	SAM.ON = cfg.AutoClaimSam == true
-	COMPASS.DROP_ON = cfg.AutoDropCompass == true
-	COMPASS.FIND_ON = cfg.AutoFindSam == true
-	SKILL.ON = cfg.AutoSkill == true
-	SKILL.HOLD_SEC = tonumber(cfg.SkillHoldSec) or 0.5
-	if not COMPASS.FIND_ON then
-		stopCompassFindLoop()
-	else
-		refreshCompassFindLoop()
-	end
-	if not SKILL.ON then
-		stopSkillLoop()
-	end
-	REJOIN.ON = cfg.AutoWhitelistRejoin == true
-	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables ~= false
-	CACHE.AUTO_DROP = cfg.AutoCacheDrop == true
-	HAKI.AUTO_KEN = cfg.AutoKenbunshoku == true
-	HAKI.AUTO_BUSO = cfg.AutoBusoshoku == true
-	HAKI.FAST = cfg.FastHaki == true
-	RAYLEIGH.ON = cfg.AutoRayleigh == true
-	AFFINITY.ON = cfg.AutoAffinity == true
-	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
-	if not AFFINITY.ON then
-		stopAffinityLoop()
-	end
-	if not HAKI.FAST then
-		STATE.hakiFastRunning = false
-		STATE.hakiWasFull = false
-		hakiClearDrainWatch()
-		if hakiReleaseFarm then hakiReleaseFarm() end
-	end
-	if not RAYLEIGH.ON then
-		RAYLEIGH._meditateTrack = nil
-	end
-	if not QUEST.EXPERTISE then
-		clearCollectSweep()
-	end
-	if not STATE.cooking then
-		STATE.pause = false
-	end
+	applyCfgIfChanged()
 end
 
 function isGrappleTool(inst)
@@ -3793,15 +4131,32 @@ function setupGrappleCleaner()
 		for _, cn in ipairs(old) do pcall(function() cn:Disconnect() end) end
 	end
 	local conns = {}
+	local lastSeatSweep = 0
 	local function onTool(inst) deleteGrappleTool(inst) end
 	local function watch(container)
 		if not container then return end
 		for _, c in ipairs(container:GetChildren()) do onTool(c) end
 		table.insert(conns, container.ChildAdded:Connect(onTool))
 	end
-	for _, d in ipairs(workspace:GetDescendants()) do destroySeat(d) end
-	table.insert(conns, workspace.DescendantAdded:Connect(function(d)
+	local function onSeatDescendant(d)
+		if not d:IsA("Seat") and not d:IsA("VehicleSeat") then return end
+		local now = os.clock()
+		if now - lastSeatSweep < 0.5 then return end
+		lastSeatSweep = now
 		task.defer(function() destroySeat(d) end)
+	end
+	local function hookMapFolder(mf)
+		if not mf or mf:GetAttribute("__SIGMA_SEAT_HOOK") then return end
+		mf:SetAttribute("__SIGMA_SEAT_HOOK", true)
+		for _, d in ipairs(mf:GetDescendants()) do
+			if d:IsA("Seat") or d:IsA("VehicleSeat") then destroySeat(d) end
+		end
+		table.insert(conns, mf.DescendantAdded:Connect(onSeatDescendant))
+	end
+	local mf = workspace:FindFirstChild("MapFolder")
+	if mf then hookMapFolder(mf) end
+	table.insert(conns, workspace.ChildAdded:Connect(function(ch)
+		if ch.Name == "MapFolder" then hookMapFolder(ch) end
 	end))
 	watch(player:FindFirstChild("Backpack"))
 	watch(player.Character)
@@ -4840,6 +5195,10 @@ end
 
 function tryHakiRejoin()
 	if STATE.hakiFastPending or STATE.rejoinPending then return true end
+	local minIv = HAKI.REJOIN_MIN_INTERVAL or 600
+	if STATE.hakiLastRejoin and os.clock() - STATE.hakiLastRejoin < minIv then
+		return false
+	end
 	STATE.hakiFastPending = true
 	STATE.hakiLastRejoin = os.clock()
 	STATE.hakiFastRunning = false
@@ -5539,7 +5898,9 @@ function stepHakiFeatures()
 			stepHakiForceOff()
 			return
 		end
-		hakiLog("diag", hakiDiagSnapshot(), 8)
+		if HAKI.DEBUG_INTERVAL and HAKI.DEBUG_INTERVAL > 0 then
+			hakiLog("diag", hakiDiagSnapshot(), HAKI.DEBUG_INTERVAL)
+		end
 		stepHakiForceOff()
 		stepAutoKenbunshoku()
 		stepAutoBusoshoku()
@@ -5651,6 +6012,7 @@ end
 
 function serviceTick()
 	if not hubFeaturesReady() then return end
+	pruneMobHolds()
 	dropGrappleTools()
 	stepCacheFeatures()
 end
@@ -5672,7 +6034,7 @@ function featureTick()
 end
 
 function hubTick()
-	syncCfg()
+	applyCfgIfChanged()
 	if not isActive() then return end
 	if spawnOpen() then
 		stopCombatLoops()
@@ -5696,7 +6058,7 @@ function hubTick()
 end
 
 function startHubLoop()
-	syncCfg()
+	applyCfgIfChanged()
 	if getgenv().__SIGMA_HUB_RUNNING then return end
 	RUN.id += 1
 	local run = RUN.id
@@ -5704,11 +6066,14 @@ function startHubLoop()
 	getgenv().__SIGMA_HUB_RUN_ID = run
 	getgenv().__SIGMA_FISH_RUNNING = true
 	getgenv().__SIGMA_FISH_RUN_ID = run
+	DIAG.uptimeAt = os.clock()
 	setupAntiAfk()
 	setupGrappleCleaner()
 	setupWhitelistGuard()
 	setupSpawnWatch()
+	setupMapFolderWatch()
 	startConsumeLoop()
+	startWatchdog()
 	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
 		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function(char)
 			bindCharacterSpawnGuard(char)
@@ -5855,23 +6220,33 @@ function SigmaFish.setAutoClaimSam(on)
 end
 
 function SigmaFish.setAutoDropCompass(on)
+	on = on == true
 	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.AutoDropCompass = on == true
+	if on and cfg.AutoFindSam then
+		cfg.AutoFindSam = false
+		COMPASS.FIND_ON = false
+		stopCompassFindLoop()
+		diagLog("toggle", "Find OFF — Drop Compass enabled")
+	end
+	cfg.AutoDropCompass = on
 	getgenv().SigmaFishConfig = cfg
-	COMPASS.DROP_ON = cfg.AutoDropCompass
+	CFG_HASH = ""
+	applyCfgIfChanged()
 	ensureLoopRunning()
 end
 
 function SigmaFish.setAutoFindSam(on)
+	on = on == true
 	local cfg = getgenv().SigmaFishConfig or {}
-	cfg.AutoFindSam = on == true
-	getgenv().SigmaFishConfig = cfg
-	COMPASS.FIND_ON = cfg.AutoFindSam
-	if COMPASS.FIND_ON then
-		refreshCompassFindLoop()
-	else
-		stopCompassFindLoop()
+	if on then
+		cfg.AutoDropCompass = false
+		COMPASS.DROP_ON = false
+		diagLog("toggle", "Drop Compass OFF — Find enabled")
 	end
+	cfg.AutoFindSam = on
+	getgenv().SigmaFishConfig = cfg
+	CFG_HASH = ""
+	applyCfgIfChanged()
 	ensureLoopRunning()
 end
 
@@ -6153,6 +6528,35 @@ function SigmaFish.isRunning()
 	return getgenv().__SIGMA_HUB_RUNNING == true
 end
 
+function SigmaFish.getDiagnostics()
+	local uptime = os.clock() - (DIAG.uptimeAt or os.clock())
+	local lines = DIAG.lines or {}
+	local tail = {}
+	for i = math.max(1, #lines - 8), #lines do
+		tail[#tail + 1] = lines[i]
+	end
+	return {
+		uptimeSec = uptime,
+		lastHeal = DIAG.lastHeal or "",
+		lastCompassFail = DIAG.lastCompassFail or "",
+		compassFindOn = COMPASS.FIND_ON == true,
+		compassFindRunning = getgenv().__SIGMA_COMPASS_FIND == true,
+		samTripBusy = SAM._tripBusy == true,
+		cooking = STATE.cooking == true,
+		solving = STATE.solving == true,
+		lines = tail,
+		summary = string.format(
+			"uptime %s | heal=%s | compass=%s fail=%s | trip=%s cook=%s",
+			string.format("%.0fs", uptime),
+			tostring(DIAG.lastHeal ~= "" and DIAG.lastHeal or "-"),
+			tostring(COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND),
+			tostring(DIAG.lastCompassFail ~= "" and DIAG.lastCompassFail or "-"),
+			tostring(SAM._tripBusy),
+			tostring(STATE.cooking)
+		),
+	}
+end
+
 function SigmaFish.stop()
 	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
 	getgenv().SigmaFishConfig.AutoFish = false
@@ -6173,18 +6577,18 @@ function SigmaFish.stop()
 	COMPASS.FIND_ON = false
 	SKILL.ON = false
 	REJOIN.ON = false
-	stopCompassFindLoop()
-	stopSkillLoop()
-	stopConsumeLoop()
 	HAKI.AUTO_KEN = false
 	HAKI.AUTO_BUSO = false
 	HAKI.FAST = false
 	RAYLEIGH.ON = false
 	AFFINITY.ON = false
-	stopAffinityLoop()
 	STATE.cooking = false
 	STATE.pause = false
-	syncCfg()
+	hubSoftResetRuntimeFlags()
+	CFG_HASH = ""
+	getgenv().__SIGMA_HUB_RUNNING = false
+	getgenv().__SIGMA_FISH_RUNNING = false
+	teardownHubResources()
 	stopLoop()
 end
 
