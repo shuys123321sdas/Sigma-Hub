@@ -1,12 +1,12 @@
---[[ Main.lua — Sigma Hub BACKEND (fishing, quest, combat) — NOT SigmaUI.lua ]]
--- SIGMA_MODULE=backend
+--[[ Main.lua — Kyoka Hub BACKEND (fishing, quest, combat) — NOT SigmaUI.lua ]]
+-- KYOKA_MODULE=backend
 
 if type(getgenv) ~= "function" then getgenv = function() return _G end end
 if type(task) ~= "table" then task = { wait = wait, spawn = function(f) coroutine.wrap(f)() end } end
 if LPH_OBFUSCATED == nil then function LPH_NO_VIRTUALIZE(f) return f end end
 
-CFG = getgenv().SigmaConfig or {}
-getgenv().SigmaConfig = CFG
+CFG = getgenv().KyokaConfig or {}
+getgenv().KyokaConfig = CFG
 
 Players = game:GetService("Players")
 ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -20,7 +20,7 @@ TeleportService = game:GetService("TeleportService")
 RunService = game:GetService("RunService")
 player = Players.LocalPlayer
 
-function sigmaLog(...) end
+function kyokaLog(...) end
 
 UNC = {
 	mobile = false,
@@ -49,7 +49,7 @@ HUB = {
 	SPAWN_COOLDOWN = 1.25,
 	SPAWN_GRACE = 0.55,
 	HIDE_NAME = true,
-	HIDE_NAME_LABEL = "Sigma Hub",
+	HIDE_NAME_LABEL = "Kyoka Hub",
 	REAL_NAME = nil,
 	REAL_DISPLAY = nil,
 	REAL_HAKI_NAME = nil,
@@ -264,19 +264,19 @@ COMPASS = {
 	REVERSE = true,
 	MAX_RAY = 80,
 	MAX_HOPS = 80,
-	HARVEST_WAIT = 0.45,
+	HARVEST_WAIT = 0.2,
 	HARVEST_TRIES = 3,
 	CLICK_INTERVAL = 0.06,
-	FAIL_RETRY = 0.5,
-	LOOP_DELAY = 0.45,
-	TP_UP = 0.5,
+	FAIL_RETRY = 0.2,
+	LOOP_DELAY = 0.2,
+	TP_UP = 0.1,
 	WATER_Y = 80,
 	NEEDLE_AXIS = "up",
 	NEEDLE_POLL = 0.1,
-	POST_TP_WAIT = 0.35,
+	POST_TP_WAIT = 0.2,
 	MIN_STEP_ALONG = 3,
-	REVERSE_NEEDLE = 0.35,
-	NEEDLE_WARMUP = 0.6,
+	REVERSE_NEEDLE = 0.2,
+	NEEDLE_WARMUP = 0.2,
 	STRICT_NEEDLE = true,
 	_spawnerDB = nil,
 	_huntFailStreak = 0,
@@ -411,7 +411,7 @@ function hubModeBlocks(feature)
 	if STATE.cooking or hubModeLocked("cooking") then
 		if feature == "fish" or feature == "cache_drop" or feature == "compass_find" then return true end
 	end
-	if COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND then
+	if COMPASS.FIND_ON and getgenv().__KYOKA_COMPASS_FIND then
 		if feature == "compass_drop" or feature == "cache_drop_compass" or feature == "sam_trip" then return true end
 	end
 	if BRING.holdActive and HAKI.FAST then
@@ -495,7 +495,7 @@ function cacheDropTypesFiltered(types, maxPerTick)
 end
 
 function cfgHash()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	local parts = {
 		tostring(cfg.AutoFish), tostring(cfg.AutoCookSell), tostring(cfg.SellAt),
 		tostring(cfg.AutoClaimSam), tostring(cfg.AutoDropCompass), tostring(cfg.AutoFindSam),
@@ -507,7 +507,7 @@ function cfgHash()
 end
 
 function readCfg()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	FISH.ON = cfg.AutoFish == true
 	FISH.AUTO_SELL = cfg.AutoCookSell ~= false
 	FISH.SELL_AT = tonumber(cfg.SellAt) or 40
@@ -539,17 +539,17 @@ end
 function applyCfgSideEffects(prevFind, prevSkill, prevAffinity, prevFast)
 	if not COMPASS.FIND_ON then
 		stopCompassFindLoop()
-	elseif not getgenv().__SIGMA_COMPASS_FIND then
+	elseif not getgenv().__KYOKA_COMPASS_FIND then
 		refreshCompassFindLoop()
 	end
 	if not SKILL.ON then
 		stopSkillLoop()
-	elseif SKILL.ON and (not prevSkill or not getgenv().__SIGMA_SKILL_LOOP) then
+	elseif SKILL.ON and (not prevSkill or not getgenv().__KYOKA_SKILL_LOOP) then
 		refreshSkillLoop()
 	end
 	if not AFFINITY.ON then
 		stopAffinityLoop()
-	elseif AFFINITY.ON and (not prevAffinity or not getgenv().__SIGMA_AFFINITY_LOOP) then
+	elseif AFFINITY.ON and (not prevAffinity or not getgenv().__KYOKA_AFFINITY_LOOP) then
 		refreshAffinityLoop()
 	end
 	if not HAKI.FAST then
@@ -578,11 +578,11 @@ function applyCfgIfChanged()
 end
 
 function setupMapFolderWatch()
-	if getgenv().__SIGMA_MAP_WATCH then return end
-	getgenv().__SIGMA_MAP_WATCH = true
+	if getgenv().__KYOKA_MAP_WATCH then return end
+	getgenv().__KYOKA_MAP_WATCH = true
 	local function hook(folder)
-		if not folder or folder:GetAttribute("__SIGMA_MAP_HOOK") then return end
-		folder:SetAttribute("__SIGMA_MAP_HOOK", true)
+		if not folder or folder:GetAttribute("__KYOKA_MAP_HOOK") then return end
+		folder:SetAttribute("__KYOKA_MAP_HOOK", true)
 		folder.DescendantAdded:Connect(function(d)
 			if d:IsA("BasePart") and d.Name == "Spawner" then invalidateCompassSpawnerDB() end
 		end)
@@ -624,8 +624,8 @@ function watchdogHeal()
 		DIAG.lastHeal = "solving"
 	end
 	if COMPASS._mouseHeld and not COMPASS.FIND_ON then compassReleaseMouse() end
-	if getgenv().__SIGMA_COMPASS_FIND and not COMPASS.FIND_ON then stopCompassFindLoop() end
-	if COMPASS.FIND_ON and isActive() and not getgenv().__SIGMA_COMPASS_FIND then
+	if getgenv().__KYOKA_COMPASS_FIND and not COMPASS.FIND_ON then stopCompassFindLoop() end
+	if COMPASS.FIND_ON and isActive() and not getgenv().__KYOKA_COMPASS_FIND then
 		refreshCompassFindLoop()
 		diagLog("watchdog", "restarted compass find loop")
 		DIAG.lastHeal = "compass_restart"
@@ -637,9 +637,9 @@ function startWatchdog()
 	WATCHDOG.runId = (WATCHDOG.runId or 0) + 1
 	local run = WATCHDOG.runId
 	task.spawn(function()
-		while getgenv().__SIGMA_HUB_RUNNING and WATCHDOG.runId == run do
+		while getgenv().__KYOKA_HUB_RUNNING and WATCHDOG.runId == run do
 			task.wait(WATCHDOG.INTERVAL or 90)
-			if getgenv().__SIGMA_HUB_RUNNING and WATCHDOG.runId == run then
+			if getgenv().__KYOKA_HUB_RUNNING and WATCHDOG.runId == run then
 				pcall(watchdogHeal)
 			end
 		end
@@ -653,10 +653,10 @@ function teardownHubResources()
 	stopAffinityLoop()
 	disableAntiAfk()
 	WATCHDOG.runId = (WATCHDOG.runId or 0) + 1
-	local hold = getgenv().__SIGMA_BRING_HOLD_CONN
-	if hold then pcall(function() hold:Disconnect() end) getgenv().__SIGMA_BRING_HOLD_CONN = nil end
-	local desc = getgenv().__SIGMA_DESCENDANT_CONN
-	if desc then pcall(function() desc:Disconnect() end) getgenv().__SIGMA_DESCENDANT_CONN = nil end
+	local hold = getgenv().__KYOKA_BRING_HOLD_CONN
+	if hold then pcall(function() hold:Disconnect() end) getgenv().__KYOKA_BRING_HOLD_CONN = nil end
+	local desc = getgenv().__KYOKA_DESCENDANT_CONN
+	if desc then pcall(function() desc:Disconnect() end) getgenv().__KYOKA_DESCENDANT_CONN = nil end
 	STATE.listeners = false
 	FISH._hookedRemotes = {}
 	if BRING.releaseHold then BRING.releaseHold() end
@@ -666,7 +666,7 @@ function teardownHubResources()
 end
 
 function isActive()
-	return getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == RUN.id
+	return getgenv().__KYOKA_HUB_RUNNING and getgenv().__KYOKA_HUB_RUN_ID == RUN.id
 end
 
 function getData()
@@ -869,11 +869,11 @@ function hubRealName()
 end
 
 function hubDisplayName()
-	return HUB.HIDE_NAME_LABEL or "Sigma Hub"
+	return HUB.HIDE_NAME_LABEL or "Kyoka Hub"
 end
 
 function notifyHub(title, content, icon, duration)
-	local fn = getgenv().SigmaHubNotify
+	local fn = getgenv().KyokaHubNotify
 	if type(fn) == "function" then
 		pcall(fn, title, content, icon, duration)
 	end
@@ -882,7 +882,7 @@ end
 function updateHakiMaxState()
 	local maxed = hakiFarmStoppedByLevel()
 	local lv, stop = statLevel("Haki"), hakiStopLevel()
-	local cb = getgenv().SigmaHakiMaxCallback
+	local cb = getgenv().KyokaHakiMaxCallback
 	if type(cb) == "function" then
 		pcall(cb, maxed, lv, stop)
 	end
@@ -991,8 +991,8 @@ function stepHideName()
 		STATE.hideNameGuiAt = now
 		patchGuiNames(true)
 	end
-	if type(getgenv().SigmaApplyUiHideName) == "function" then
-		pcall(getgenv().SigmaApplyUiHideName)
+	if type(getgenv().KyokaApplyUiHideName) == "function" then
+		pcall(getgenv().KyokaApplyUiHideName)
 	end
 end
 
@@ -1443,7 +1443,7 @@ end
 
 function compassPollNeedle(marchDir, maxSec)
 	local t0 = os.clock()
-	while getgenv().__SIGMA_COMPASS_FIND and os.clock() - t0 < (maxSec or COMPASS.POST_TP_WAIT or 0.35) do
+	while getgenv().__KYOKA_COMPASS_FIND and os.clock() - t0 < (maxSec or COMPASS.POST_TP_WAIT or 0.35) do
 		local nd = compassReadMarchNeedle(marchDir, true)
 		if nd and marchDir and not compassNeedleAligned(nd, marchDir)
 			and compassNeedleAligned(nd, -marchDir) then
@@ -1456,7 +1456,7 @@ end
 
 function compassWaitForNeedle(maxSec)
 	local t0 = os.clock()
-	while getgenv().__SIGMA_COMPASS_FIND and os.clock() - t0 < (maxSec or 3) do
+	while getgenv().__KYOKA_COMPASS_FIND and os.clock() - t0 < (maxSec or 3) do
 		compassHoldTool()
 		compassKeepNeedleVisible()
 		local n = compassNeedlePart()
@@ -1644,7 +1644,7 @@ end
 function compassWaitHarvest(sp, startC)
 	local perTry = COMPASS.HARVEST_WAIT / COMPASS.HARVEST_TRIES
 	for _ = 1, COMPASS.HARVEST_TRIES do
-		if not getgenv().__SIGMA_COMPASS_FIND or samCountCompassTool() < startC then
+		if not getgenv().__KYOKA_COMPASS_FIND or samCountCompassTool() < startC then
 			return samCountCompassTool() < startC
 		end
 		compassHoldTool()
@@ -1662,7 +1662,7 @@ end
 function compassHuntGroundLoop(startC, visited)
 	visited = visited or {}
 	local hops, stallTries = 0, 0
-	while getgenv().__SIGMA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
+	while getgenv().__KYOKA_COMPASS_FIND and samCountCompassTool() >= startC and hops < COMPASS.MAX_HOPS do
 		if hubModeBlocks("compass_find") then break end
 		hops += 1
 		local hrp = getHRP()
@@ -1709,7 +1709,7 @@ function compassHuntOnce(startC)
 	local ok, result = pcall(function()
 		local warmupSteps = math.ceil((COMPASS.NEEDLE_WARMUP or 0.6) / 0.08)
 		for _ = 1, warmupSteps do
-			if not getgenv().__SIGMA_COMPASS_FIND then return false end
+			if not getgenv().__KYOKA_COMPASS_FIND then return false end
 			compassHoldTool()
 			task.wait(0.08)
 		end
@@ -1759,7 +1759,7 @@ end
 
 function stopCompassFindLoop()
 	COMPASS._findRunId = (COMPASS._findRunId or 0) + 1
-	getgenv().__SIGMA_COMPASS_FIND = false
+	getgenv().__KYOKA_COMPASS_FIND = false
 	compassClearLock()
 	compassReleaseMouse()
 	compassEndNoclip()
@@ -1770,14 +1770,14 @@ function refreshCompassFindLoop()
 		stopCompassFindLoop()
 		return
 	end
-	if getgenv().__SIGMA_COMPASS_FIND then return end
+	if getgenv().__KYOKA_COMPASS_FIND then return end
 	COMPASS._findRunId = (COMPASS._findRunId or 0) + 1
 	local runId = COMPASS._findRunId
-	getgenv().__SIGMA_COMPASS_FIND = true
+	getgenv().__KYOKA_COMPASS_FIND = true
 	compassBeginNoclip()
 	diagLog("compass", "find loop started")
 	task.spawn(function()
-		while getgenv().__SIGMA_COMPASS_FIND and COMPASS.FIND_ON and isActive() and COMPASS._findRunId == runId do
+		while getgenv().__KYOKA_COMPASS_FIND and COMPASS.FIND_ON and isActive() and COMPASS._findRunId == runId do
 			if hubModeBlocks("compass_find") then
 				compassReleaseMouse()
 				task.wait(0.35)
@@ -2465,11 +2465,11 @@ function m1Attack()
 end
 
 function setQuestMobKill(on)
-	getgenv().__SIGMA_QUEST_MOB_KILL = on == true
+	getgenv().__KYOKA_QUEST_MOB_KILL = on == true
 end
 
 function questMobKillEnabled()
-	return getgenv().__SIGMA_QUEST_MOB_KILL == true
+	return getgenv().__KYOKA_QUEST_MOB_KILL == true
 end
 
 function attackLoopOnMob(mob, mode)
@@ -3010,8 +3010,8 @@ function hookListeners()
 	end
 
 	for _, d in ipairs(game:GetDescendants()) do listen(d) end
-	if not getgenv().__SIGMA_DESCENDANT_CONN then
-		getgenv().__SIGMA_DESCENDANT_CONN = game.DescendantAdded:Connect(listen)
+	if not getgenv().__KYOKA_DESCENDANT_CONN then
+		getgenv().__KYOKA_DESCENDANT_CONN = game.DescendantAdded:Connect(listen)
 	end
 
 	task.spawn(function()
@@ -3410,11 +3410,11 @@ function normalizeCachePick(picked)
 end
 
 function cacheUsePick()
-	return normalizeCachePick((getgenv().SigmaFishConfig or {}).CacheUsePick)
+	return normalizeCachePick((getgenv().KyokaFishConfig or {}).CacheUsePick)
 end
 
 function cacheDropPick()
-	return normalizeCachePick((getgenv().SigmaFishConfig or {}).CacheDropPick)
+	return normalizeCachePick((getgenv().KyokaFishConfig or {}).CacheDropPick)
 end
 
 function cacheToolIsType(toolName, typeKey)
@@ -3552,7 +3552,7 @@ function stepCacheUseSelected()
 	if not hum then return false end
 	local used = false
 	for _, typeKey in ipairs(pick) do
-		if typeKey == "Compass" and (COMPASS.FIND_ON or getgenv().__SIGMA_COMPASS_FIND) then continue end
+		if typeKey == "Compass" and (COMPASS.FIND_ON or getgenv().__KYOKA_COMPASS_FIND) then continue end
 		for _, tool in ipairs(collectToolsByCacheType(typeKey)) do
 			if not isActive() then return used end
 			useToolClicks(tool, hum, CACHE.USE_CLICKS)
@@ -3616,7 +3616,7 @@ function startConsumeLoop()
 	CACHE._consumeRunId = (CACHE._consumeRunId or 0) + 1
 	local run = CACHE._consumeRunId
 	task.spawn(function()
-		while getgenv().__SIGMA_HUB_RUNNING and CACHE._consumeRunId == run do
+		while getgenv().__KYOKA_HUB_RUNNING and CACHE._consumeRunId == run do
 			if CACHE.AUTO_CONSUME and hubFeaturesReady() then
 				pcall(stepMiscConsumables)
 			end
@@ -3926,10 +3926,10 @@ end
 
 function stashQuestFish()
 	if not FISH.ON or not rodTaskPhase() then return {} end
-	local keep = workspace:FindFirstChild("SigmaFishKeep_" .. player.UserId)
+	local keep = workspace:FindFirstChild("KyokaFishKeep_" .. player.UserId)
 	if not keep then
 		keep = Instance.new("Folder")
-		keep.Name = "SigmaFishKeep_" .. player.UserId
+		keep.Name = "KyokaFishKeep_" .. player.UserId
 		keep.Parent = workspace
 	end
 	local out = {}
@@ -4119,7 +4119,7 @@ function hakiModeEnabled()
 end
 
 function hakiDebugOn()
-	if getgenv().SigmaHakiDebug == false then return false end
+	if getgenv().KyokaHakiDebug == false then return false end
 	return true
 end
 
@@ -4182,8 +4182,8 @@ end
 
 function hookSpawnLoadGui(load)
 	if not load or load.Name ~= "Load" or not load:IsA("ScreenGui") then return end
-	if load:GetAttribute("__SIGMA_SPAWN_HOOK") then return end
-	load:SetAttribute("__SIGMA_SPAWN_HOOK", true)
+	if load:GetAttribute("__KYOKA_SPAWN_HOOK") then return end
+	load:SetAttribute("__KYOKA_SPAWN_HOOK", true)
 	pcall(function()
 		load:GetPropertyChangedSignal("Enabled"):Connect(function()
 			if load.Enabled then
@@ -4196,8 +4196,8 @@ function hookSpawnLoadGui(load)
 end
 
 function setupSpawnWatch()
-	if getgenv().__SIGMA_SPAWN_WATCH then return end
-	getgenv().__SIGMA_SPAWN_WATCH = true
+	if getgenv().__KYOKA_SPAWN_WATCH then return end
+	getgenv().__KYOKA_SPAWN_WATCH = true
 	local function watchPg(pg)
 		if not pg then return end
 		hookSpawnLoadGui(pg:FindFirstChild("Load"))
@@ -4284,9 +4284,9 @@ end
 
 function disableAntiAfk()
 	STATE.antiAfkRunId = (STATE.antiAfkRunId or 0) + 1
-	local old = getgenv().__SIGMA_AntiAfkConn
+	local old = getgenv().__KYOKA_AntiAfkConn
 	if old then pcall(function() old:Disconnect() end) end
-	getgenv().__SIGMA_AntiAfkConn = nil
+	getgenv().__KYOKA_AntiAfkConn = nil
 end
 
 function setupAntiAfk()
@@ -4297,7 +4297,7 @@ function setupAntiAfk()
 	disableAntiAfk()
 	STATE.antiAfkRunId = (STATE.antiAfkRunId or 0) + 1
 	local myAfk = STATE.antiAfkRunId
-	getgenv().__SIGMA_AntiAfkConn = player.Idled:Connect(function()
+	getgenv().__KYOKA_AntiAfkConn = player.Idled:Connect(function()
 		if UNC.vuser then
 			pcall(function()
 				VirtualUser:CaptureController()
@@ -4306,11 +4306,11 @@ function setupAntiAfk()
 		end
 	end)
 	pcall(function()
-		if getgenv().__SIGMA_AntiAfkHopBlocked then return end
+		if getgenv().__KYOKA_AntiAfkHopBlocked then return end
 		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
 			if d.Name == "RequestHop" and (d:IsA("RemoteEvent") or d:IsA("BindableEvent")) then
 				if type(d.Fire) == "function" then d.Fire = function() end end
-				getgenv().__SIGMA_AntiAfkHopBlocked = true
+				getgenv().__KYOKA_AntiAfkHopBlocked = true
 			end
 		end
 	end)
@@ -4386,7 +4386,7 @@ function destroySeat(inst)
 end
 
 function setupGrappleCleaner()
-	local old = getgenv().__SIGMA_GrappleConns
+	local old = getgenv().__KYOKA_GrappleConns
 	if old then
 		for _, cn in ipairs(old) do pcall(function() cn:Disconnect() end) end
 	end
@@ -4406,8 +4406,8 @@ function setupGrappleCleaner()
 		task.defer(function() destroySeat(d) end)
 	end
 	local function hookMapFolder(mf)
-		if not mf or mf:GetAttribute("__SIGMA_SEAT_HOOK") then return end
-		mf:SetAttribute("__SIGMA_SEAT_HOOK", true)
+		if not mf or mf:GetAttribute("__KYOKA_SEAT_HOOK") then return end
+		mf:SetAttribute("__KYOKA_SEAT_HOOK", true)
 		for _, d in ipairs(mf:GetDescendants()) do
 			if d:IsA("Seat") or d:IsA("VehicleSeat") then destroySeat(d) end
 		end
@@ -4425,7 +4425,7 @@ function setupGrappleCleaner()
 		watch(char)
 		watch(player:FindFirstChild("Backpack"))
 	end))
-	getgenv().__SIGMA_GrappleConns = conns
+	getgenv().__KYOKA_GrappleConns = conns
 end
 
 function statLevel(name)
@@ -4589,7 +4589,7 @@ function skillReleaseAllKeys()
 end
 
 function skillHoldSec()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	local n = tonumber(cfg.SkillHoldSec)
 	if n ~= nil and n >= 0 then return n end
 	return tonumber(SKILL.HOLD_SEC) or 0.5
@@ -4638,7 +4638,7 @@ function normalizeSkillKeys(picked)
 end
 
 function skillActiveKeys()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	return normalizeSkillKeys(cfg.SkillKeys)
 end
 
@@ -4669,19 +4669,19 @@ function stepAutoSkillOnce()
 end
 
 function stopSkillLoop()
-	getgenv().__SIGMA_SKILL_LOOP = false
+	getgenv().__KYOKA_SKILL_LOOP = false
 	skillReleaseAllKeys()
 end
 
 function refreshSkillLoop()
-	getgenv().__SIGMA_SKILL_LOOP = false
+	getgenv().__KYOKA_SKILL_LOOP = false
 	if not (SKILL.ON and isActive()) then return end
 	if #skillActiveKeys() < 1 then return end
-	local runId = (getgenv().__SIGMA_SKILL_RUN or 0) + 1
-	getgenv().__SIGMA_SKILL_RUN = runId
-	getgenv().__SIGMA_SKILL_LOOP = true
+	local runId = (getgenv().__KYOKA_SKILL_RUN or 0) + 1
+	getgenv().__KYOKA_SKILL_RUN = runId
+	getgenv().__KYOKA_SKILL_LOOP = true
 	task.spawn(function()
-		while getgenv().__SIGMA_SKILL_LOOP and getgenv().__SIGMA_SKILL_RUN == runId
+		while getgenv().__KYOKA_SKILL_LOOP and getgenv().__KYOKA_SKILL_RUN == runId
 			and SKILL.ON and isActive() do
 			if not worldReady() then
 				task.wait(0.35)
@@ -4691,8 +4691,8 @@ function refreshSkillLoop()
 			if #keys < 1 then break end
 			stepAutoSkillOnce()
 		end
-		if getgenv().__SIGMA_SKILL_RUN == runId then
-			getgenv().__SIGMA_SKILL_LOOP = false
+		if getgenv().__KYOKA_SKILL_RUN == runId then
+			getgenv().__KYOKA_SKILL_LOOP = false
 		end
 		skillReleaseAllKeys()
 	end)
@@ -4750,7 +4750,7 @@ function readHakiBar()
 end
 
 function hakiStopLevel()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	local stop = tonumber(cfg.HakiStopLevel)
 	if stop == nil then stop = HAKI.STOP_LEVEL end
 	return stop
@@ -5007,8 +5007,8 @@ BRING.tickHold = LPH_NO_VIRTUALIZE(function()
 end)
 
 function BRING.ensureHoldLoop()
-	if getgenv().__SIGMA_BRING_HOLD_CONN then return end
-	getgenv().__SIGMA_BRING_HOLD_CONN = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function()
+	if getgenv().__KYOKA_BRING_HOLD_CONN then return end
+	getgenv().__KYOKA_BRING_HOLD_CONN = RunService.Heartbeat:Connect(LPH_NO_VIRTUALIZE(function()
 		if not isActive() or not HAKI.FAST then
 			if BRING.holdActive or next(BRING.mobHolds) then BRING.releaseHold() end
 			return
@@ -5084,13 +5084,13 @@ function BRING.mobPassesNearFilter(mob, opts)
 end
 
 function BRING.stopNearPull()
-	getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = false
+	getgenv().__KYOKA_HAKI_NEAR_PULL_ACTIVE = false
 	BRING.nearFarmOpts = nil
 end
 
 function BRING.startNearPull(opts)
 	if not BRING.NEAR_PULL then return end
-	getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = true
+	getgenv().__KYOKA_HAKI_NEAR_PULL_ACTIVE = true
 	BRING.nearFarmOpts = opts
 	BRING.ensureNearPullLoop()
 end
@@ -5137,18 +5137,18 @@ function BRING.pullMobsInRadius(opts)
 end
 
 function BRING.ensureNearPullLoop()
-	if getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP then return end
-	getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP = true
+	if getgenv().__KYOKA_HAKI_NEAR_PULL_LOOP then return end
+	getgenv().__KYOKA_HAKI_NEAR_PULL_LOOP = true
 	task.spawn(function()
-		while getgenv().__SIGMA_HUB_RUNNING do
-			if getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE and BRING.nearFarmOpts
+		while getgenv().__KYOKA_HUB_RUNNING do
+			if getgenv().__KYOKA_HAKI_NEAR_PULL_ACTIVE and BRING.nearFarmOpts
 				and HAKI.FAST and isActive() then
 				pcall(function() BRING.pullMobsInRadius(BRING.nearFarmOpts) end)
 			end
 			task.wait(BRING.NEAR_PULL_IV)
 		end
-		getgenv().__SIGMA_HAKI_NEAR_PULL_LOOP = false
-		getgenv().__SIGMA_HAKI_NEAR_PULL_ACTIVE = false
+		getgenv().__KYOKA_HAKI_NEAR_PULL_LOOP = false
+		getgenv().__KYOKA_HAKI_NEAR_PULL_ACTIVE = false
 	end)
 end
 
@@ -5466,7 +5466,7 @@ function tryHakiRejoin()
 	hakiClearDrainWatch()
 	hakiClearFullSticky()
 	hakiReleaseFarm()
-	return sigmaRejoinServer("fast-haki")
+	return kyokaRejoinServer("fast-haki")
 end
 
 function stepHakiForceOff()
@@ -5827,7 +5827,7 @@ function affinityLog(msg, interval)
 end
 
 function affinityTargetsFromCfg(cfg)
-	cfg = cfg or getgenv().SigmaFishConfig or {}
+	cfg = cfg or getgenv().KyokaFishConfig or {}
 	local t = {}
 	local map = {
 		Melee = cfg.AffinityMelee,
@@ -6063,7 +6063,7 @@ end
 function affinityWaitRoll(panel, dfKey, before)
 	local t0 = os.clock()
 	local minWait = AFFINITY.SKIP_ANIM and 0.12 or 0.45
-	while getgenv().__SIGMA_AFFINITY_RUN and os.clock() - t0 < AFFINITY.ROLL_WAIT do
+	while getgenv().__KYOKA_AFFINITY_RUN and os.clock() - t0 < AFFINITY.ROLL_WAIT do
 		local aff = affinityRead(panel, dfKey)
 		if affinityAffChanged(aff, before) and os.clock() - t0 >= minWait then
 			task.wait(AFFINITY.STABLE_WAIT)
@@ -6077,7 +6077,7 @@ end
 function affinityRunSlot1(entry, ui)
 	local key, panel = entry.key, entry.panel
 	local rolls = 0
-	while getgenv().__SIGMA_AFFINITY_RUN and AFFINITY.ON and rolls < AFFINITY.MAX_ROLLS do
+	while getgenv().__KYOKA_AFFINITY_RUN and AFFINITY.ON and rolls < AFFINITY.MAX_ROLLS do
 		if not next(AFFINITY.TARGETS) then return true end
 		local aff = affinityReadStable(panel, key)
 		affinityMarkSealed(aff)
@@ -6121,23 +6121,23 @@ function affinityMain()
 end
 
 function stopAffinityLoop()
-	getgenv().__SIGMA_AFFINITY_RUN = false
+	getgenv().__KYOKA_AFFINITY_RUN = false
 	AFFINITY.sealed = {}
 end
 
 function startAffinityLoop()
-	if getgenv().__SIGMA_AFFINITY_LOOP then return end
-	getgenv().__SIGMA_AFFINITY_LOOP = true
-	getgenv().__SIGMA_AFFINITY_RUN = true
+	if getgenv().__KYOKA_AFFINITY_LOOP then return end
+	getgenv().__KYOKA_AFFINITY_LOOP = true
+	getgenv().__KYOKA_AFFINITY_RUN = true
 	task.spawn(function()
-		while getgenv().__SIGMA_AFFINITY_LOOP and AFFINITY.ON do
+		while getgenv().__KYOKA_AFFINITY_LOOP and AFFINITY.ON do
 			pcall(affinityMain)
-			if not getgenv().__SIGMA_AFFINITY_LOOP or not AFFINITY.ON then break end
+			if not getgenv().__KYOKA_AFFINITY_LOOP or not AFFINITY.ON then break end
 			local ui = affinityGetUI()
 			task.wait((not ui or not ui.Enabled) and 1 or 0.12)
 		end
 		stopAffinityLoop()
-		getgenv().__SIGMA_AFFINITY_LOOP = false
+		getgenv().__KYOKA_AFFINITY_LOOP = false
 	end)
 end
 
@@ -6146,7 +6146,7 @@ function refreshAffinityLoop()
 		startAffinityLoop()
 	else
 		stopAffinityLoop()
-		getgenv().__SIGMA_AFFINITY_LOOP = false
+		getgenv().__KYOKA_AFFINITY_LOOP = false
 	end
 end
 
@@ -6167,11 +6167,11 @@ function stepHakiFeatures()
 		stepFastHaki()
 	end)
 	if not ok then
-		sigmaLog("[Sigma Haki] ERROR:", err)
+		kyokaLog("[Kyoka Haki] ERROR:", err)
 	end
 end
 
-function sigmaKickSelf()
+function kyokaKickSelf()
 	if STATE.kickPending then return false end
 	STATE.kickPending = true
 	pcall(function()
@@ -6180,7 +6180,7 @@ function sigmaKickSelf()
 	return true
 end
 
-function sigmaRejoinServer(reason)
+function kyokaRejoinServer(reason)
 	if STATE.rejoinPending then return false end
 	STATE.rejoinPending = true
 	pcall(function() TeleportService:Teleport(game.PlaceId) end)
@@ -6195,7 +6195,7 @@ function rejoinWhitelistNormalize(name)
 end
 
 function rejoinWhitelistSet()
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	local raw = cfg.RejoinWhitelist
 	local set = {}
 	local function add(s)
@@ -6245,7 +6245,7 @@ function tryWhitelistKick(intruder, source)
 	local now = os.clock()
 	if now - (STATE.whitelistKickAt or 0) < REJOIN.KICK_COOLDOWN then return false end
 	STATE.whitelistKickAt = now
-	return sigmaKickSelf()
+	return kyokaKickSelf()
 end
 
 function stepWhitelistKick()
@@ -6259,8 +6259,8 @@ function stepWhitelistKick()
 end
 
 function setupWhitelistGuard()
-	if getgenv().__SIGMA_WHITELIST_CONN then return end
-	getgenv().__SIGMA_WHITELIST_CONN = Players.PlayerAdded:Connect(function(plr)
+	if getgenv().__KYOKA_WHITELIST_CONN then return end
+	getgenv().__KYOKA_WHITELIST_CONN = Players.PlayerAdded:Connect(function(plr)
 		task.defer(function()
 			if not REJOIN.ON then return end
 			if not rejoinPlayerAllowed(plr) then
@@ -6319,13 +6319,13 @@ end
 
 function startHubLoop()
 	applyCfgIfChanged()
-	if getgenv().__SIGMA_HUB_RUNNING then return end
+	if getgenv().__KYOKA_HUB_RUNNING then return end
 	RUN.id += 1
 	local run = RUN.id
-	getgenv().__SIGMA_HUB_RUNNING = true
-	getgenv().__SIGMA_HUB_RUN_ID = run
-	getgenv().__SIGMA_FISH_RUNNING = true
-	getgenv().__SIGMA_FISH_RUN_ID = run
+	getgenv().__KYOKA_HUB_RUNNING = true
+	getgenv().__KYOKA_HUB_RUN_ID = run
+	getgenv().__KYOKA_FISH_RUNNING = true
+	getgenv().__KYOKA_FISH_RUN_ID = run
 	DIAG.uptimeAt = os.clock()
 	setupAntiAfk()
 	setupGrappleCleaner()
@@ -6334,8 +6334,8 @@ function startHubLoop()
 	setupMapFolderWatch()
 	startConsumeLoop()
 	startWatchdog()
-	if not getgenv().__SIGMA_HAKI_CHAR_CONN then
-		getgenv().__SIGMA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function(char)
+	if not getgenv().__KYOKA_HAKI_CHAR_CONN then
+		getgenv().__KYOKA_HAKI_CHAR_CONN = player.CharacterAdded:Connect(function(char)
 			bindCharacterSpawnGuard(char)
 			STATE.hakiFastPending = false
 			STATE.hakiFastRunning = false
@@ -6354,7 +6354,7 @@ function startHubLoop()
 		bindCharacterSpawnGuard(player.Character)
 	end
 	task.spawn(function()
-		while getgenv().__SIGMA_HUB_RUNNING and getgenv().__SIGMA_HUB_RUN_ID == run do
+		while getgenv().__KYOKA_HUB_RUNNING and getgenv().__KYOKA_HUB_RUN_ID == run do
 			pcall(hubTick)
 			local waitT = HUB.LOOP_DELAY
 			if questWorkActive() then
@@ -6377,22 +6377,22 @@ function stopLoop()
 	STATE.loopRunning = false
 end
 
-SigmaFish = {}
+KyokaFish = {}
 
-function SigmaFish.setAutoFish(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoFish(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoFish = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	FISH.ON = cfg.AutoFish
 	STATE.pause = false
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoQuest(on)
+function KyokaFish.setAutoQuest(on)
 	on = on == true
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoQuest = on
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	QUEST.AUTO = on
 	if not on then
 		stopQuestWork()
@@ -6402,24 +6402,24 @@ function SigmaFish.setAutoQuest(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setQuestPick(names)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setQuestPick(names)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.QuestPick = normalizeQuestPick(names)
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	QUEST.PICK = cfg.QuestPick
 	syncCfg()
 end
 
-function SigmaFish.setAutoExpertise(on)
+function KyokaFish.setAutoExpertise(on)
 	on = on == true
 	if not on then
 		QUEST.EXPERTISE = false
 		stopQuestWork()
 		clearCollectSweep()
 	end
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoExpertise = on
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	if on then
 		QUEST.EXPERTISE = true
 		clearCollectSweep()
@@ -6428,60 +6428,60 @@ function SigmaFish.setAutoExpertise(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setQuestSelect(_)
+function KyokaFish.setQuestSelect(_)
 	-- legacy no-op
 end
 
-function SigmaFish.setAutoCookSell(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoCookSell(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoCookSell = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	STATE.cooking = false
 	STATE.pause = false
 	syncCfg()
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoSpawn(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoSpawn(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoSpawn = on ~= false
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	syncCfg()
 end
 
-function SigmaFish.setAntiAfk(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAntiAfk(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AntiAfk = on ~= false
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	refreshHubServices()
 end
 
-function SigmaFish.setHideName(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setHideName(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.HideName = on ~= false
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	HUB.HIDE_NAME = cfg.HideName
 	if not HUB.HIDE_NAME then
 		restoreHideName()
 		STATE.hideNameActive = false
 	end
-	if type(getgenv().SigmaApplyUiHideName) == "function" then
-		pcall(getgenv().SigmaApplyUiHideName)
+	if type(getgenv().KyokaApplyUiHideName) == "function" then
+		pcall(getgenv().KyokaApplyUiHideName)
 	end
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoClaimSam(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoClaimSam(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoClaimSam = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	SAM.ON = cfg.AutoClaimSam
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoDropCompass(on)
+function KyokaFish.setAutoDropCompass(on)
 	on = on == true
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	if on and cfg.AutoFindSam then
 		cfg.AutoFindSam = false
 		COMPASS.FIND_ON = false
@@ -6489,56 +6489,56 @@ function SigmaFish.setAutoDropCompass(on)
 		diagLog("toggle", "Find OFF — Drop Compass enabled")
 	end
 	cfg.AutoDropCompass = on
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	CFG_HASH = ""
 	applyCfgIfChanged()
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoFindSam(on)
+function KyokaFish.setAutoFindSam(on)
 	on = on == true
-	local cfg = getgenv().SigmaFishConfig or {}
+	local cfg = getgenv().KyokaFishConfig or {}
 	if on then
 		cfg.AutoDropCompass = false
 		COMPASS.DROP_ON = false
 		diagLog("toggle", "Drop Compass OFF — Find enabled")
 	end
 	cfg.AutoFindSam = on
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	CFG_HASH = ""
 	applyCfgIfChanged()
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoSkill(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoSkill(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoSkill = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	SKILL.ON = cfg.AutoSkill
 	if SKILL.ON then refreshSkillLoop() else stopSkillLoop() end
 	ensureLoopRunning()
 end
 
-function SigmaFish.setSkillKeys(keys)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setSkillKeys(keys)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.SkillKeys = keys or {}
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	if SKILL.ON then refreshSkillLoop() end
 end
 
-function SigmaFish.setSkillHoldSec(sec)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setSkillHoldSec(sec)
+	local cfg = getgenv().KyokaFishConfig or {}
 	local n = tonumber(sec)
 	if n == nil or n < 0 then return end
 	cfg.SkillHoldSec = n
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	SKILL.HOLD_SEC = n
 end
 
-function SigmaFish.setAutoWhitelistRejoin(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoWhitelistRejoin(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoWhitelistRejoin = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	REJOIN.ON = cfg.AutoWhitelistRejoin
 	if REJOIN.ON then
 		task.defer(function()
@@ -6549,20 +6549,20 @@ function SigmaFish.setAutoWhitelistRejoin(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setRejoinWhitelist(text)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setRejoinWhitelist(text)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.RejoinWhitelist = tostring(text or "")
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 end
 
-function SigmaFish.rejoinServer()
-	return sigmaRejoinServer("manual")
+function KyokaFish.rejoinServer()
+	return kyokaRejoinServer("manual")
 end
 
-function SigmaFish.setAutoKenbunshoku(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoKenbunshoku(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoKenbunshoku = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	HAKI.AUTO_KEN = cfg.AutoKenbunshoku
 	if not on then
 		stepHakiForceOff()
@@ -6570,10 +6570,10 @@ function SigmaFish.setAutoKenbunshoku(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoBusoshoku(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoBusoshoku(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoBusoshoku = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	HAKI.AUTO_BUSO = cfg.AutoBusoshoku
 	if not on then
 		stepHakiForceOff()
@@ -6581,10 +6581,10 @@ function SigmaFish.setAutoBusoshoku(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setFastHaki(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setFastHaki(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.FastHaki = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	HAKI.FAST = cfg.FastHaki
 	if not HAKI.FAST then
 		if hakiReleaseFarm then hakiReleaseFarm() end
@@ -6595,10 +6595,10 @@ function SigmaFish.setFastHaki(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoRayleigh(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoRayleigh(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoRayleigh = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	RAYLEIGH.ON = cfg.AutoRayleigh
 	if not RAYLEIGH.ON then
 		RAYLEIGH._meditateTrack = nil
@@ -6606,10 +6606,10 @@ function SigmaFish.setAutoRayleigh(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoAffinity(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoAffinity(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoAffinity = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	AFFINITY.ON = cfg.AutoAffinity
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
 	if not AFFINITY.ON then
@@ -6619,17 +6619,17 @@ function SigmaFish.setAutoAffinity(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAffinityTarget(stat, value)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAffinityTarget(stat, value)
+	local cfg = getgenv().KyokaFishConfig or {}
 	local key = "Affinity" .. tostring(stat)
 	cfg[key] = value
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	AFFINITY.TARGETS = affinityTargetsFromCfg(cfg)
 	if AFFINITY.ON then refreshAffinityLoop() end
 end
 
-function SigmaFish.applyConfig()
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.applyConfig()
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.QuestPick = normalizeQuestPick(cfg.QuestPick)
 	if cfg.AutoSpawn == nil then cfg.AutoSpawn = true end
 	if cfg.AntiAfk == nil then cfg.AntiAfk = true end
@@ -6656,33 +6656,33 @@ function SigmaFish.applyConfig()
 	if cfg.AutoCacheDrop == nil then cfg.AutoCacheDrop = false end
 	if cfg.AutoUseConsumables == nil then cfg.AutoUseConsumables = true end
 	if cfg.SellAt == nil then cfg.SellAt = 40 end
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 
-	SigmaFish.setAutoQuest(cfg.AutoQuest == true)
-	SigmaFish.setAutoExpertise(cfg.AutoExpertise == true)
-	SigmaFish.setAutoFish(cfg.AutoFish == true)
-	SigmaFish.setAutoCookSell(cfg.AutoCookSell ~= false)
-	SigmaFish.setAutoSpawn(cfg.AutoSpawn ~= false)
-	SigmaFish.setAntiAfk(cfg.AntiAfk ~= false)
-	SigmaFish.setSellAt(cfg.SellAt)
-	SigmaFish.setAutoKenbunshoku(cfg.AutoKenbunshoku == true)
-	SigmaFish.setAutoBusoshoku(cfg.AutoBusoshoku == true)
-	SigmaFish.setFastHaki(cfg.FastHaki == true)
-	SigmaFish.setAutoRayleigh(cfg.AutoRayleigh == true)
-	SigmaFish.setAutoAffinity(cfg.AutoAffinity == true)
-	SigmaFish.setHideName(cfg.HideName ~= false)
-	SigmaFish.setAutoClaimSam(cfg.AutoClaimSam == true)
-	SigmaFish.setAutoDropCompass(cfg.AutoDropCompass == true)
-	SigmaFish.setAutoFindSam(cfg.AutoFindSam == true)
-	SigmaFish.setAutoSkill(cfg.AutoSkill == true)
-	SigmaFish.setSkillKeys(cfg.SkillKeys)
-	SigmaFish.setSkillHoldSec(cfg.SkillHoldSec)
-	SigmaFish.setRejoinWhitelist(cfg.RejoinWhitelist)
-	SigmaFish.setAutoWhitelistRejoin(cfg.AutoWhitelistRejoin == true)
-	SigmaFish.setCacheUsePick(cfg.CacheUsePick)
-	SigmaFish.setCacheDropPick(cfg.CacheDropPick)
-	SigmaFish.setAutoCacheDrop(cfg.AutoCacheDrop == true)
-	SigmaFish.setAutoUseConsumables(cfg.AutoUseConsumables ~= false)
+	KyokaFish.setAutoQuest(cfg.AutoQuest == true)
+	KyokaFish.setAutoExpertise(cfg.AutoExpertise == true)
+	KyokaFish.setAutoFish(cfg.AutoFish == true)
+	KyokaFish.setAutoCookSell(cfg.AutoCookSell ~= false)
+	KyokaFish.setAutoSpawn(cfg.AutoSpawn ~= false)
+	KyokaFish.setAntiAfk(cfg.AntiAfk ~= false)
+	KyokaFish.setSellAt(cfg.SellAt)
+	KyokaFish.setAutoKenbunshoku(cfg.AutoKenbunshoku == true)
+	KyokaFish.setAutoBusoshoku(cfg.AutoBusoshoku == true)
+	KyokaFish.setFastHaki(cfg.FastHaki == true)
+	KyokaFish.setAutoRayleigh(cfg.AutoRayleigh == true)
+	KyokaFish.setAutoAffinity(cfg.AutoAffinity == true)
+	KyokaFish.setHideName(cfg.HideName ~= false)
+	KyokaFish.setAutoClaimSam(cfg.AutoClaimSam == true)
+	KyokaFish.setAutoDropCompass(cfg.AutoDropCompass == true)
+	KyokaFish.setAutoFindSam(cfg.AutoFindSam == true)
+	KyokaFish.setAutoSkill(cfg.AutoSkill == true)
+	KyokaFish.setSkillKeys(cfg.SkillKeys)
+	KyokaFish.setSkillHoldSec(cfg.SkillHoldSec)
+	KyokaFish.setRejoinWhitelist(cfg.RejoinWhitelist)
+	KyokaFish.setAutoWhitelistRejoin(cfg.AutoWhitelistRejoin == true)
+	KyokaFish.setCacheUsePick(cfg.CacheUsePick)
+	KyokaFish.setCacheDropPick(cfg.CacheDropPick)
+	KyokaFish.setAutoCacheDrop(cfg.AutoCacheDrop == true)
+	KyokaFish.setAutoUseConsumables(cfg.AutoUseConsumables ~= false)
 
 	STATE.cooking = false
 	STATE.pause = false
@@ -6690,50 +6690,50 @@ function SigmaFish.applyConfig()
 	ensureLoopRunning()
 end
 
-function SigmaFish.setSellAt(n)
-	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-	getgenv().SigmaFishConfig.SellAt = tonumber(n)
+function KyokaFish.setSellAt(n)
+	getgenv().KyokaFishConfig = getgenv().KyokaFishConfig or {}
+	getgenv().KyokaFishConfig.SellAt = tonumber(n)
 	syncCfg()
 end
 
-function SigmaFish.getQuestList()
+function KyokaFish.getQuestList()
 	return questListAll()
 end
 
-function SigmaFish.cookSell()
+function KyokaFish.cookSell()
 	return cookAndSell(true)
 end
 
-function SigmaFish.getCacheCounts()
+function KyokaFish.getCacheCounts()
 	return getCacheCounts()
 end
 
-function SigmaFish.setCacheUsePick(keys)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setCacheUsePick(keys)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.CacheUsePick = keys or {}
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	ensureLoopRunning()
 end
 
-function SigmaFish.setCacheDropPick(keys)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setCacheDropPick(keys)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.CacheDropPick = keys or {}
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoCacheDrop(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoCacheDrop(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoCacheDrop = on == true
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	CACHE.AUTO_DROP = cfg.AutoCacheDrop
 	ensureLoopRunning()
 end
 
-function SigmaFish.setAutoUseConsumables(on)
-	local cfg = getgenv().SigmaFishConfig or {}
+function KyokaFish.setAutoUseConsumables(on)
+	local cfg = getgenv().KyokaFishConfig or {}
 	cfg.AutoUseConsumables = on ~= false
-	getgenv().SigmaFishConfig = cfg
+	getgenv().KyokaFishConfig = cfg
 	CACHE.AUTO_CONSUME = cfg.AutoUseConsumables
 	if CACHE.AUTO_CONSUME then
 		startConsumeLoop()
@@ -6743,11 +6743,11 @@ function SigmaFish.setAutoUseConsumables(on)
 	ensureLoopRunning()
 end
 
-function SigmaFish.dropCacheSelected()
+function KyokaFish.dropCacheSelected()
 	return cacheDropTypes(cacheDropPick(), 50)
 end
 
-function SigmaFish.getHakiStatus()
+function KyokaFish.getHakiStatus()
 	local lv, stop = statLevel("Haki"), hakiStopLevel()
 	return {
 		level = lv,
@@ -6756,7 +6756,7 @@ function SigmaFish.getHakiStatus()
 	}
 end
 
-function SigmaFish.getStatus()
+function KyokaFish.getStatus()
 	syncCfg()
 	local q = getQuests()
 	return {
@@ -6784,11 +6784,11 @@ function SigmaFish.getStatus()
 	}
 end
 
-function SigmaFish.isRunning()
-	return getgenv().__SIGMA_HUB_RUNNING == true
+function KyokaFish.isRunning()
+	return getgenv().__KYOKA_HUB_RUNNING == true
 end
 
-function SigmaFish.getDiagnostics()
+function KyokaFish.getDiagnostics()
 	local uptime = os.clock() - (DIAG.uptimeAt or os.clock())
 	local lines = DIAG.lines or {}
 	local tail = {}
@@ -6801,7 +6801,7 @@ function SigmaFish.getDiagnostics()
 		lastCompassFail = DIAG.lastCompassFail or "",
 		lastCompassHop = DIAG.lastCompassHop or "",
 		compassFindOn = COMPASS.FIND_ON == true,
-		compassFindRunning = getgenv().__SIGMA_COMPASS_FIND == true,
+		compassFindRunning = getgenv().__KYOKA_COMPASS_FIND == true,
 		samTripBusy = SAM._tripBusy == true,
 		cooking = STATE.cooking == true,
 		solving = STATE.solving == true,
@@ -6810,7 +6810,7 @@ function SigmaFish.getDiagnostics()
 			"uptime %s | heal=%s | compass=%s fail=%s hop=%s | trip=%s cook=%s",
 			string.format("%.0fs", uptime),
 			tostring(DIAG.lastHeal ~= "" and DIAG.lastHeal or "-"),
-			tostring(COMPASS.FIND_ON and getgenv().__SIGMA_COMPASS_FIND),
+			tostring(COMPASS.FIND_ON and getgenv().__KYOKA_COMPASS_FIND),
 			tostring(DIAG.lastCompassFail ~= "" and DIAG.lastCompassFail or "-"),
 			tostring(DIAG.lastCompassHop ~= "" and DIAG.lastCompassHop or "-"),
 			tostring(SAM._tripBusy),
@@ -6819,21 +6819,21 @@ function SigmaFish.getDiagnostics()
 	}
 end
 
-function SigmaFish.stop()
-	getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
-	getgenv().SigmaFishConfig.AutoFish = false
-	getgenv().SigmaFishConfig.AutoQuest = false
-	getgenv().SigmaFishConfig.AutoExpertise = false
-	getgenv().SigmaFishConfig.AutoKenbunshoku = false
-	getgenv().SigmaFishConfig.AutoBusoshoku = false
-	getgenv().SigmaFishConfig.FastHaki = false
-	getgenv().SigmaFishConfig.AutoRayleigh = false
-	getgenv().SigmaFishConfig.AutoAffinity = false
-	getgenv().SigmaFishConfig.AutoClaimSam = false
-	getgenv().SigmaFishConfig.AutoDropCompass = false
-	getgenv().SigmaFishConfig.AutoFindSam = false
-	getgenv().SigmaFishConfig.AutoSkill = false
-	getgenv().SigmaFishConfig.AutoWhitelistRejoin = false
+function KyokaFish.stop()
+	getgenv().KyokaFishConfig = getgenv().KyokaFishConfig or {}
+	getgenv().KyokaFishConfig.AutoFish = false
+	getgenv().KyokaFishConfig.AutoQuest = false
+	getgenv().KyokaFishConfig.AutoExpertise = false
+	getgenv().KyokaFishConfig.AutoKenbunshoku = false
+	getgenv().KyokaFishConfig.AutoBusoshoku = false
+	getgenv().KyokaFishConfig.FastHaki = false
+	getgenv().KyokaFishConfig.AutoRayleigh = false
+	getgenv().KyokaFishConfig.AutoAffinity = false
+	getgenv().KyokaFishConfig.AutoClaimSam = false
+	getgenv().KyokaFishConfig.AutoDropCompass = false
+	getgenv().KyokaFishConfig.AutoFindSam = false
+	getgenv().KyokaFishConfig.AutoSkill = false
+	getgenv().KyokaFishConfig.AutoWhitelistRejoin = false
 	SAM.ON = false
 	COMPASS.DROP_ON = false
 	COMPASS.FIND_ON = false
@@ -6848,23 +6848,23 @@ function SigmaFish.stop()
 	STATE.pause = false
 	hubSoftResetRuntimeFlags()
 	CFG_HASH = ""
-	getgenv().__SIGMA_HUB_RUNNING = false
-	getgenv().__SIGMA_FISH_RUNNING = false
+	getgenv().__KYOKA_HUB_RUNNING = false
+	getgenv().__KYOKA_FISH_RUNNING = false
 	teardownHubResources()
 	stopLoop()
 end
 
 -- Reset loop khi reload Main.lua
-getgenv().__SIGMA_HUB_RUNNING = false
-getgenv().__SIGMA_HUB_RUN_ID = nil
-getgenv().__SIGMA_FISH_RUNNING = false
-getgenv().__SIGMA_FISH_RUN_ID = nil
+getgenv().__KYOKA_HUB_RUNNING = false
+getgenv().__KYOKA_HUB_RUN_ID = nil
+getgenv().__KYOKA_FISH_RUNNING = false
+getgenv().__KYOKA_FISH_RUN_ID = nil
 
 do
-	local cfg = getgenv().SigmaFishConfig
+	local cfg = getgenv().KyokaFishConfig
 	if type(cfg) ~= "table" then
 		cfg = {}
-		getgenv().SigmaFishConfig = cfg
+		getgenv().KyokaFishConfig = cfg
 	end
 	if cfg.AutoCookSell == nil then cfg.AutoCookSell = true end
 	if cfg.SellAt == nil then cfg.SellAt = 40 end
@@ -6896,5 +6896,5 @@ do
 	startHubLoop()
 end
 
-getgenv().SigmaFish = SigmaFish
-return SigmaFish
+getgenv().KyokaFish = KyokaFish
+return KyokaFish
