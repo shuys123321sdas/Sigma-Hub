@@ -223,6 +223,8 @@ function SigmaUI.build(hub, Fish, opts)
 		c.HideUiFirstLoad = c.HideUiFirstLoad == true
 		c.UiAcrylic = c.UiAcrylic ~= false
 		c.UiPanelBackground = c.UiPanelBackground == true
+		c.UiTransparent = c.UiTransparent == true
+		c.UiTransparency = math.clamp(tonumber(c.UiTransparency) or 55, 10, 95)
 		return c
 	end
 
@@ -235,6 +237,17 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 		if Window.SetPanelBackground then
 			pcall(function() Window:SetPanelBackground(c.UiPanelBackground == true) end)
+		end
+		if Window.SetBackgroundTransparency then
+			pcall(function()
+				if c.UiTransparent then
+					Window:SetBackgroundTransparency(c.UiTransparency / 100)
+				else
+					Window:SetBackgroundTransparency(0)
+				end
+			end)
+		elseif Window.ToggleTransparency then
+			pcall(function() Window:ToggleTransparency(c.UiTransparent == true) end)
 		end
 	end
 	getgenv().SigmaApplyUiAppearance = applyUiAppearance
@@ -463,7 +476,7 @@ function SigmaUI.build(hub, Fish, opts)
 	local autoWhitelistToggle, rejoinWhitelistInput
 	local cacheCountPara, cacheUseDropdown, cacheDropDropdown
 	local autoCacheDropToggle, autoUseConsumablesToggle, sellAtSlider
-	local hideUiFirstLoadToggle, uiAcrylicToggle, uiPanelBackgroundToggle
+	local hideUiFirstLoadToggle, uiAcrylicToggle, uiPanelBackgroundToggle, uiTransparentToggle, uiTransparencySlider
 	local populateOk, populateErr = pcall(function()
 		local uptimePara = MainTab:Paragraph({
 			Title = "Session",
@@ -1062,7 +1075,7 @@ function SigmaUI.build(hub, Fish, opts)
 
 		uiAcrylicToggle = SettingsTab:Toggle({
 			Title = "Acrylic Blur",
-			Desc = "WindUI frosted glass behind the window",
+			Desc = "Frosted glass blur behind window (not see-through)",
 			Value = cfg.UiAcrylic ~= false,
 			Default = true,
 			Flag = "Sigma_UiAcrylic",
@@ -1071,6 +1084,36 @@ function SigmaUI.build(hub, Fish, opts)
 				getgenv().SigmaFishConfig.UiAcrylic = v ~= false
 				cfg = getgenv().SigmaFishConfig
 				applyUiAppearance(getgenv().SigmaFishConfig)
+			end),
+		})
+
+		uiTransparentToggle = SettingsTab:Toggle({
+			Title = "See-through Window",
+			Desc = "WindUI SetBackgroundTransparency — nhìn xuyên nền UI",
+			Value = cfg.UiTransparent == true,
+			Default = false,
+			Flag = "Sigma_UiTransparent",
+			Callback = uiCallback(function(v)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.UiTransparent = v == true
+				cfg = getgenv().SigmaFishConfig
+				applyUiAppearance(getgenv().SigmaFishConfig)
+			end),
+		})
+
+		uiTransparencySlider = SettingsTab:Slider({
+			Title = "Window Transparency",
+			Desc = "Cao hơn = nền window trong hơn (bật See-through trước)",
+			Value = { Min = 10, Max = 95, Default = cfg.UiTransparency or 55 },
+			Flag = "Sigma_UiTransparency",
+			Callback = uiCallback(function(v)
+				local n = math.clamp(tonumber(v) or 55, 10, 95)
+				getgenv().SigmaFishConfig = getgenv().SigmaFishConfig or {}
+				getgenv().SigmaFishConfig.UiTransparency = n
+				cfg = getgenv().SigmaFishConfig
+				if getgenv().SigmaFishConfig.UiTransparent then
+					applyUiAppearance(getgenv().SigmaFishConfig)
+				end
 			end),
 		})
 
@@ -1217,7 +1260,11 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 		setToggle(hideUiFirstLoadToggle, c.HideUiFirstLoad)
 		setToggle(uiAcrylicToggle, c.UiAcrylic ~= false)
+		setToggle(uiTransparentToggle, c.UiTransparent)
 		setToggle(uiPanelBackgroundToggle, c.UiPanelBackground)
+		if uiTransparencySlider and uiTransparencySlider.Set and c.UiTransparency ~= nil then
+			pcall(function() uiTransparencySlider:Set(tonumber(c.UiTransparency) or c.UiTransparency) end)
+		end
 		applyUiAppearance(c)
 	end
 
@@ -1268,6 +1315,13 @@ function SigmaUI.build(hub, Fish, opts)
 		end
 		if uiAcrylicToggle and uiAcrylicToggle.Value ~= nil then
 			c.UiAcrylic = uiAcrylicToggle.Value ~= false
+		end
+		if uiTransparentToggle and uiTransparentToggle.Value ~= nil then
+			c.UiTransparent = uiTransparentToggle.Value == true
+		end
+		if uiTransparencySlider and uiTransparencySlider.Value ~= nil then
+			local n = tonumber(uiTransparencySlider.Value)
+			if n then c.UiTransparency = math.clamp(n, 10, 95) end
 		end
 		if uiPanelBackgroundToggle and uiPanelBackgroundToggle.Value ~= nil then
 			c.UiPanelBackground = uiPanelBackgroundToggle.Value == true
